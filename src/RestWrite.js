@@ -1777,7 +1777,12 @@ RestWrite.prototype.buildParseObjects = function () {
         if (typeof parentVal !== 'object') {
           parentVal = {};
         }
-        parentVal[splittedKey[1]] = data[key];
+        let curObj = parentVal;
+        for (let i = 1; i < splittedKey.length - 1; i++) {
+          if (typeof curObj[splittedKey[i]] === 'undefined') curObj[splittedKey[i]] = {};
+          curObj = curObj[splittedKey[i]];
+        }
+        curObj[splittedKey[splittedKey.length - 1]] = data[key];
         updatedObject.set(parentProp, parentVal);
       }
       delete data[key];
