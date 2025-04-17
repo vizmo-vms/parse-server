@@ -302,6 +302,7 @@
  * @property {String} serverMonitoringMode The MongoDB driver option to instruct the driver monitors to use a specific monitoring mode.
  * @property {Number} serverSelectionTimeoutMS The MongoDB driver option to specify the amount of time in milliseconds for a server to be considered suitable for selection.
  * @property {Number} socketTimeoutMS The MongoDB driver option to specify the amount of time, in milliseconds, spent attempting to send or receive on a socket before timing out. Specifying 0 means no timeout.
+ * @property {Boolean} ignoreUndefined The MongoDB driver option to set whether to ignore undefined values in BSON documents.
  * @property {Number} srvMaxHosts The MongoDB driver option to specify the maximum number of hosts to connect to when using an srv connection string, a setting of 0 means unlimited hosts.
  * @property {String} srvServiceName The MongoDB driver option to modify the srv URI service name.
  * @property {Boolean} ssl The MongoDB driver option to enable or disable TLS/SSL for the connection (equivalent to tls option).

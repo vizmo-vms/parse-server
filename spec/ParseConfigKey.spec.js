@@ -82,6 +82,7 @@ describe('Config Keys', () => {
         authSource: 'admin',
         autoSelectFamily: true,
         autoSelectFamilyAttemptTimeout: 3000,
+        ignoreUndefined: true,
         compressors: ['zlib'],
         connectTimeoutMS: 5000,
         directConnection: false,

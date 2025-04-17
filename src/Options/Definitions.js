@@ -1265,6 +1265,11 @@ module.exports.DatabaseOptions = {
     action: parsers.booleanParser,
     default: false,
   },
+  ignoreUndefined: {
+    env: 'PARSE_SERVER_DATABASE_IGNORE_UNDEFINED',
+    help: 'The MongoDB driver option to set whether to ignore undefined values in BSON documents.',
+    action: parsers.booleanParser,
+  },
   forceServerObjectId: {
     env: 'PARSE_SERVER_DATABASE_FORCE_SERVER_OBJECT_ID',
     help: 'The MongoDB driver option to force server to assign _id values instead of driver.',

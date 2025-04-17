@@ -666,6 +666,8 @@ export interface DatabaseOptions {
   autoSelectFamily: ?boolean;
   /* The MongoDB driver option to specify the amount of time in milliseconds to wait for a connection attempt to finish before trying the next address when using the autoSelectFamily option. If set to a positive integer less than 10, the value 10 is used instead. */
   autoSelectFamilyAttemptTimeout: ?number;
+  /* The MongoDB driver option to set whether to ignore undefined values in BSON documents. */
+  ignoreUndefined: ?boolean;
   /* The MongoDB driver option to specify the maximum number of connections that may be in the process of being established concurrently by the connection pool. */
   maxConnecting: ?number;
   /* The MongoDB driver option to specify the maximum time in milliseconds that a thread can wait for a connection to become available. */
