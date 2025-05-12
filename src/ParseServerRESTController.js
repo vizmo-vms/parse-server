@@ -1,6 +1,6 @@
 const Config = require('./Config');
 const Auth = require('./Auth');
-import RESTController from 'parse/lib/node/RESTController';
+const RESTController = require('parse/lib/node/RESTController').default;
 const Parse = require('parse/node');
 
 function getSessionToken(options) {
