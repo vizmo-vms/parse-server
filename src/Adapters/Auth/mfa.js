@@ -6,6 +6,7 @@
  * @param {Array<String>} options.options - Supported MFA methods. Must include `"SMS"` or `"TOTP"`.
  * @param {Number} [options.digits=6] - The number of digits for the one-time password (OTP). Must be between 4 and 10.
  * @param {Number} [options.period=30] - The validity period of the OTP in seconds. Must be greater than 10.
+ * @param {Number} [options.emailExpiry=5*60] - The validity period of the email OTP in seconds. Must be greater than 10.
  * @param {String} [options.algorithm="SHA1"] - The algorithm used for TOTP generation. Defaults to `"SHA1"`.
  * @param {Function} [options.sendSMS] - A callback function for sending SMS OTPs. Required if `"SMS"` is included in `options`.
  *
@@ -87,8 +88,9 @@ class MFAAdapter extends AuthAdapter {
     }
     this.sms = validOptions.includes('SMS');
     this.totp = validOptions.includes('TOTP');
-    if (!this.sms && !this.totp) {
-      throw 'mfa.options must include SMS or TOTP';
+    this.email = validOptions.includes('EMAIL');
+    if (!this.sms && !this.totp && !this.email) {
+      throw 'mfa.options must include SMS or TOTP or EMAIL';
     }
     const digits = opts.digits || 6;
     const period = opts.period || 30;
@@ -104,11 +106,21 @@ class MFAAdapter extends AuthAdapter {
     if (period < 10) {
       throw 'mfa.period must be greater than 10';
     }
+    if(this.email){
+      if(this.emailOTPExpiry < 60){
+        throw 'mfa.emailExpiry must be greater than 60 seconds';
+      }
+    }
     const sendSMS = opts.sendSMS;
+    const sendEmail = opts.sendEmail;
+    if (this.email && typeof sendEmail !== 'function') {
+      throw 'mfa.sendEmail callback must be defined when using EMAIL OTPs';
+    }
     if (this.sms && typeof sendSMS !== 'function') {
       throw 'mfa.sendSMS callback must be defined when using SMS OTPs';
     }
     this.smsCallback = sendSMS;
+    this.emailCallback = sendEmail;
     this.digits = digits;
     this.period = period;
     this.algorithm = opts.algorithm || 'SHA1';
@@ -120,6 +132,9 @@ class MFAAdapter extends AuthAdapter {
     if (this.totp) {
       return this.setupTOTP(mfaData);
     }
+    if(mfaData.email &&  this.email){
+      return this.setupEmailOTP(mfaData.email);
+    }
     throw 'Invalid MFA data';
   }
   async validateLogin(loginData, _, req) {
@@ -128,7 +143,28 @@ class MFAAdapter extends AuthAdapter {
     };
     const token = loginData.token;
     const auth = req.original.get('authData') || {};
-    const { secret, recovery, mobile, token: saved, expiry } = auth.mfa || {};
+    const { secret, recovery, mobile, email, token: saved, expiry } = auth.mfa || {};
+    if (this.email && email) {
+      if (token === 'request') {
+        const { token: sendToken, expiry } = await this.sendEmail(email);
+        auth.mfa.token = sendToken;
+        auth.mfa.expiry = expiry;
+        req.object.set('authData', auth);
+        await req.object.save(null, { useMasterKey: true });
+        throw 'Please enter the token';
+      }
+      if (!saved || token !== saved) {
+        throw 'Invalid MFA token 1';
+      }
+      if (new Date() > expiry) {
+        throw 'Invalid MFA token 2';
+      }
+      delete auth.mfa.token;
+      delete auth.mfa.expiry;
+      return {
+        save: auth.mfa,
+      };
+    }
     if (this.sms && mobile) {
       if (token === 'request') {
         const { token: sendToken, expiry } = await this.sendSMS(mobile);
@@ -185,6 +221,13 @@ class MFAAdapter extends AuthAdapter {
       }
       return this.confirmSMSOTP(authData, req.original.get('authData')?.mfa || {});
     }
+
+    if (authData.email && this.email) {
+      if (!authData.token) {
+        throw 'MFA is already set up on this account';
+      }
+      return this.confirmEmailOTP(authData, req.original.get('authData')?.mfa || {});
+    }
     if (this.totp) {
       await this.validateLogin({ token: authData.old }, null, req);
       return this.validateSetUp(authData);
@@ -201,6 +244,11 @@ class MFAAdapter extends AuthAdapter {
       };
     }
     if (this.sms && authData.mobile) {
+      return {
+        status: 'enabled',
+      };
+    }
+    if (this.email && authData.email) {
       return {
         status: 'enabled',
       };
@@ -231,6 +279,20 @@ class MFAAdapter extends AuthAdapter {
     };
   }
 
+  async setupEmailOTP(email) {
+    const { token, expiry } = await this.sendEmail(email);
+    return {
+      save: {
+        pending: {
+          [email]: {
+            token,
+            expiry,
+          },
+        },
+      },
+    };
+  }
+
   async sendSMS(mobile) {
     if (!/^[+]*[(]{0,1}[0-9]{1,3}[)]{0,1}[-\s\./0-9]*$/g.test(mobile)) {
       throw 'Invalid mobile number.';
@@ -245,7 +307,20 @@ class MFAAdapter extends AuthAdapter {
     return { token, expiry };
   }
 
-  async confirmSMSOTP(inputData, authData) {
+  async sendEmail(email) {
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw 'Invalid email address.';
+  }
+    let token = '';
+    while (token.length < this.digits) {
+      token += randomString(10).replace(/\D/g, '');
+    }
+    token = token.substring(0, this.digits);
+    await Promise.resolve(this.emailCallback(token, email));
+    const expiry = new Date(new Date().getTime() + this.emailOTPExpiry * 1000);
+    return { token, expiry };
+  }
+  async  confirmSMSOTP(inputData, authData) {
     const { mobile, token } = inputData;
     if (!authData.pending?.[mobile]) {
       throw 'This number is not pending';
@@ -259,6 +334,25 @@ class MFAAdapter extends AuthAdapter {
     }
     delete authData.pending[mobile];
     authData.mobile = mobile;
+    return {
+      save: authData,
+    };
+  }
+
+  async confirmEmailOTP(inputData, authData) {
+    const { email, token } = inputData;
+    if (!authData.pending?.[email]) {
+      throw 'This email is not pending';
+    }
+    const pendingData = authData.pending[email];
+    if (token !== pendingData.token) {
+      throw 'Invalid MFA token';
+    }
+    if (new Date() > pendingData.expiry) {
+      throw 'Invalid MFA token';
+    }
+    delete authData.pending[email];
+    authData.email = email;
     return {
       save: authData,
     };
