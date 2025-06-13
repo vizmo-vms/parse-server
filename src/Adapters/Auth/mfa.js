@@ -94,6 +94,7 @@ class MFAAdapter extends AuthAdapter {
     }
     const digits = opts.digits || 6;
     const period = opts.period || 30;
+    const emailOTPExpiry = opts.emailOTPExpiry || 5*60; // Default to 5 minutes
     if (typeof digits !== 'number') {
       throw 'mfa.digits must be a number';
     }
@@ -107,8 +108,8 @@ class MFAAdapter extends AuthAdapter {
       throw 'mfa.period must be greater than 10';
     }
     if(this.email){
-      if(this.emailOTPExpiry < 60){
-        throw 'mfa.emailExpiry must be greater than 60 seconds';
+      if(this.emailOTPExpiry < 5*60){
+        throw 'mfa.emailExpiry must be greater than 5 minutes';
       }
     }
     const sendSMS = opts.sendSMS;
@@ -123,17 +124,18 @@ class MFAAdapter extends AuthAdapter {
     this.emailCallback = sendEmail;
     this.digits = digits;
     this.period = period;
+    this.emailOTPExpiry = emailOTPExpiry;
     this.algorithm = opts.algorithm || 'SHA1';
   }
   validateSetUp(mfaData) {
     if (mfaData.mobile && this.sms) {
       return this.setupMobileOTP(mfaData.mobile);
     }
-    if (this.totp) {
-      return this.setupTOTP(mfaData);
-    }
     if(mfaData.email &&  this.email){
       return this.setupEmailOTP(mfaData.email);
+    }
+    if (this.totp) {
+      return this.setupTOTP(mfaData);
     }
     throw 'Invalid MFA data';
   }
@@ -308,15 +310,16 @@ class MFAAdapter extends AuthAdapter {
   }
 
   async sendEmail(email) {
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    throw 'Invalid email address.';
-  }
+   const decodedEmail = email.replace(/___DOT___/g, '.')
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(decodedEmail)) {
+      throw 'Invalid email address.';
+    }
     let token = '';
     while (token.length < this.digits) {
-      token += randomString(10).replace(/\D/g, '');
+      token += (0, _cryptoUtils.randomString)(10).replace(/\D/g, '');
     }
     token = token.substring(0, this.digits);
-    await Promise.resolve(this.emailCallback(token, email));
+    await Promise.resolve(this.emailCallback(token, decodedEmail));
     const expiry = new Date(new Date().getTime() + this.emailOTPExpiry * 1000);
     return { token, expiry };
   }
