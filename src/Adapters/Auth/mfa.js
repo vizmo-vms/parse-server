@@ -78,6 +78,7 @@
  */
 
 import { TOTP, Secret } from 'otpauth';
+import crypto from 'crypto';
 import { randomString } from '../../cryptoUtils';
 import AuthAdapter from './AuthAdapter';
 class MFAAdapter extends AuthAdapter {
@@ -149,17 +150,32 @@ class MFAAdapter extends AuthAdapter {
     if (this.email && email) {
       if (token === 'request') {
         const { token: sendToken, expiry } = await this.sendEmail(email);
-        auth.mfa.token = sendToken;
-        auth.mfa.expiry = expiry;
-        req.object.set('authData', auth);
-        await req.object.save(null, { useMasterKey: true });
-        throw 'Please enter the token';
+        const auth = req.original.get('authData') || {};
+        auth.mfa = {
+          token: sendToken,
+          email: email,
+          expiry: expiry
+        };
+
+        // Use direct database access to avoid validation
+        const query = new Parse.Query(Parse.User);
+        const user = await query.get(req.object.id, { useMasterKey: true });
+        user.set('authData', auth);
+
+        // Skip validation and hooks
+        await user.save(null, {
+          useMasterKey: true,
+          context: { skipValidation: true },
+          validateSave: false
+        });
+
+        throw new Parse.Error(209,'Please enter the token');
       }
       if (!saved || token !== saved) {
         throw 'Invalid MFA token 1';
       }
       if (new Date() > expiry) {
-        throw 'Invalid MFA token 2';
+        throw 'Expired MFA token';
       }
       delete auth.mfa.token;
       delete auth.mfa.expiry;
@@ -283,10 +299,12 @@ class MFAAdapter extends AuthAdapter {
 
   async setupEmailOTP(email) {
     const { token, expiry } = await this.sendEmail(email);
+    const emailHash = this.md5Hash(email);
     return {
       save: {
         pending: {
-          [email]: {
+          // encode the email md5 has
+          [emailHash]: {
             token,
             expiry,
           },
@@ -344,17 +362,18 @@ class MFAAdapter extends AuthAdapter {
 
   async confirmEmailOTP(inputData, authData) {
     const { email, token } = inputData;
-    if (!authData.pending?.[email]) {
+    const emailHash = this.md5Hash(email);
+    if (!authData.pending?.[emailHash]) {
       throw 'This email is not pending';
     }
-    const pendingData = authData.pending[email];
+    const pendingData = authData.pending[emailHash];
     if (token !== pendingData.token) {
       throw 'Invalid MFA token';
     }
     if (new Date() > pendingData.expiry) {
       throw 'Invalid MFA token';
     }
-    delete authData.pending[email];
+    delete authData.pending[emailHash];
     authData.email = email;
     return {
       save: authData,
@@ -383,6 +402,9 @@ class MFAAdapter extends AuthAdapter {
       response: { recovery: recovery.join(', ') },
       save: { secret, recovery },
     };
+  }
+  md5Hash(str) {
+    return crypto.createHash('md5').update(str).digest('hex');
   }
 }
 export default new MFAAdapter();

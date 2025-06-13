@@ -511,10 +511,17 @@ const checkIfUserHasProvidedConfiguredProvidersForLogin = (
     return;
   }
 
-  throw new Parse.Error(
-    Parse.Error.OTHER_CAUSE,
-    `Missing additional authData ${additionProvidersNotFound.join(',')}`
-  );
+  let errorMsg  =  `Missing additional authData ${additionProvidersNotFound.join(',')}`
+  if(additionProvidersNotFound.length>0){
+    const mfaData = userAuthData.mfa || {};
+    const needsToken = !mfaData.secret && (mfaData.email || mfaData.mobile);
+    const additionalInfo = needsToken
+      ? " (include 'request' as token to receive a verification code)"
+      : "";
+
+    errorMsg += additionalInfo;
+  }
+  throw new Parse.Error(Parse.Error.OTHER_CAUSE, errorMsg);
 };
 
 // Validate each authData step-by-step and return the provider responses
