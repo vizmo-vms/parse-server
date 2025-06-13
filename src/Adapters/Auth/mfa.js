@@ -6,7 +6,6 @@
  * @param {Array<String>} options.options - Supported MFA methods. Must include `"SMS"` or `"TOTP"`.
  * @param {Number} [options.digits=6] - The number of digits for the one-time password (OTP). Must be between 4 and 10.
  * @param {Number} [options.period=30] - The validity period of the OTP in seconds. Must be greater than 10.
- * @param {Number} [options.emailExpiry=5*60] - The validity period of the email OTP in seconds. Must be greater than 10.
  * @param {String} [options.algorithm="SHA1"] - The algorithm used for TOTP generation. Defaults to `"SHA1"`.
  * @param {Function} [options.sendSMS] - A callback function for sending SMS OTPs. Required if `"SMS"` is included in `options`.
  *
@@ -78,8 +77,7 @@
  */
 
 import { TOTP, Secret } from 'otpauth';
-import crypto from 'crypto';
-import { randomString } from '../../cryptoUtils';
+import { randomString, sha256Hash } from '../../cryptoUtils';
 import AuthAdapter from './AuthAdapter';
 class MFAAdapter extends AuthAdapter {
   validateOptions(opts) {
@@ -95,7 +93,31 @@ class MFAAdapter extends AuthAdapter {
     }
     const digits = opts.digits || 6;
     const period = opts.period || 30;
-    const emailOTPExpiry = opts.emailOTPExpiry || 5*60; // Default to 5 minutes
+
+    // Define default periods for each method
+    const defaultPeriods = {
+      SMS: 30, // 5 minutes for SMS
+      EMAIL: 30, // 5 minutes for Email
+      TOTP: 30, // 30 seconds for TOTP
+    };
+
+    if (typeof opts.period === 'number') {
+      validOptions.forEach(method => {
+        this.period[method] = this.period;
+      });
+    } else if (opts.period && typeof opts.period === 'object') {
+      Object.keys(this.period).forEach(method => {
+        if (this.periods.hasOwnProperty(method) && typeof this.period[method] === 'number') {
+          this.period[method] = this.period[method] ?? defaultPeriods[method] ?? 30;
+        }
+      });
+      this.period = { ...opts.period };
+    } else {
+      validOptions.forEach(method => {
+        this.period[method] = defaultPeriods[method] ?? 30;
+      });
+    }
+
     if (typeof digits !== 'number') {
       throw 'mfa.digits must be a number';
     }
@@ -108,11 +130,7 @@ class MFAAdapter extends AuthAdapter {
     if (period < 10) {
       throw 'mfa.period must be greater than 10';
     }
-    if(this.email){
-      if(this.emailOTPExpiry < 5*60){
-        throw 'mfa.emailExpiry must be greater than 5 minutes';
-      }
-    }
+
     const sendSMS = opts.sendSMS;
     const sendEmail = opts.sendEmail;
     if (this.email && typeof sendEmail !== 'function') {
@@ -125,14 +143,13 @@ class MFAAdapter extends AuthAdapter {
     this.emailCallback = sendEmail;
     this.digits = digits;
     this.period = period;
-    this.emailOTPExpiry = emailOTPExpiry;
     this.algorithm = opts.algorithm || 'SHA1';
   }
   validateSetUp(mfaData) {
     if (mfaData.mobile && this.sms) {
       return this.setupMobileOTP(mfaData.mobile);
     }
-    if(mfaData.email &&  this.email){
+    if (mfaData.email && this.email) {
       return this.setupEmailOTP(mfaData.email);
     }
     if (this.totp) {
@@ -150,13 +167,11 @@ class MFAAdapter extends AuthAdapter {
     if (this.email && email) {
       if (token === 'request') {
         const { token: sendToken, expiry } = await this.sendEmail(email);
-        const auth = req.original.get('authData') || {};
         auth.mfa = {
           token: sendToken,
           email: email,
-          expiry: expiry
+          expiry: expiry,
         };
-
         // Use direct database access to avoid validation
         const query = new Parse.Query(Parse.User);
         const user = await query.get(req.object.id, { useMasterKey: true });
@@ -166,16 +181,16 @@ class MFAAdapter extends AuthAdapter {
         await user.save(null, {
           useMasterKey: true,
           context: { skipValidation: true },
-          validateSave: false
+          validateSave: false,
         });
 
-        throw new Parse.Error(209,'Please enter the token');
+        throw new Parse.Error(209, 'Please enter the token');
       }
       if (!saved || token !== saved) {
         throw 'Invalid MFA token 1';
       }
       if (new Date() > expiry) {
-        throw 'Expired MFA token';
+        throw 'Invalid MFA token 2';
       }
       delete auth.mfa.token;
       delete auth.mfa.expiry;
@@ -235,14 +250,14 @@ class MFAAdapter extends AuthAdapter {
     }
     if (authData.mobile && this.sms) {
       if (!authData.token) {
-        throw 'MFA is already set up on this account';
+        throw 'Token required to confirm MFA changes.';
       }
       return this.confirmSMSOTP(authData, req.original.get('authData')?.mfa || {});
     }
 
     if (authData.email && this.email) {
       if (!authData.token) {
-        throw 'MFA is already set up on this account';
+        throw 'Token required to confirm MFA changes.';
       }
       return this.confirmEmailOTP(authData, req.original.get('authData')?.mfa || {});
     }
@@ -299,11 +314,10 @@ class MFAAdapter extends AuthAdapter {
 
   async setupEmailOTP(email) {
     const { token, expiry } = await this.sendEmail(email);
-    const emailHash = this.md5Hash(email);
+    const emailHash = sha256Hash(email);
     return {
       save: {
         pending: {
-          // encode the email md5 has
           [emailHash]: {
             token,
             expiry,
@@ -328,20 +342,19 @@ class MFAAdapter extends AuthAdapter {
   }
 
   async sendEmail(email) {
-   const decodedEmail = email.replace(/___DOT___/g, '.')
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(decodedEmail)) {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       throw 'Invalid email address.';
     }
     let token = '';
     while (token.length < this.digits) {
-      token += (0, _cryptoUtils.randomString)(10).replace(/\D/g, '');
+      token += randomString(10).replace(/\D/g, '');
     }
     token = token.substring(0, this.digits);
-    await Promise.resolve(this.emailCallback(token, decodedEmail));
-    const expiry = new Date(new Date().getTime() + this.emailOTPExpiry * 1000);
+    await Promise.resolve(this.emailCallback(token, email));
+    const expiry = new Date(new Date().getTime() + this.period * 1000);
     return { token, expiry };
   }
-  async  confirmSMSOTP(inputData, authData) {
+  async confirmSMSOTP(inputData, authData) {
     const { mobile, token } = inputData;
     if (!authData.pending?.[mobile]) {
       throw 'This number is not pending';
@@ -362,7 +375,7 @@ class MFAAdapter extends AuthAdapter {
 
   async confirmEmailOTP(inputData, authData) {
     const { email, token } = inputData;
-    const emailHash = this.md5Hash(email);
+    const emailHash = sha256Hash(email);
     if (!authData.pending?.[emailHash]) {
       throw 'This email is not pending';
     }
@@ -402,9 +415,6 @@ class MFAAdapter extends AuthAdapter {
       response: { recovery: recovery.join(', ') },
       save: { secret, recovery },
     };
-  }
-  md5Hash(str) {
-    return crypto.createHash('md5').update(str).digest('hex');
   }
 }
 export default new MFAAdapter();

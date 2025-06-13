@@ -45,3 +45,7 @@ export function newToken(): string {
 export function md5Hash(string: string): string {
   return createHash('md5').update(string).digest('hex');
 }
+
+export function sha256Hash(string: string): string {
+  return crypto.createHash('sha256').update(string).digest('hex');
+}
