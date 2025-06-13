@@ -127,9 +127,12 @@ class MFAAdapter extends AuthAdapter {
     if (digits < 4 || digits > 10) {
       throw 'mfa.digits must be between 4 and 10';
     }
-    if (period < 10) {
-      throw 'mfa.period must be greater than 10';
-    }
+
+    validOptions.forEach(method => {
+      if (typeof this.period[method] !== 'number' || this.period[method] < 10) {
+        throw `mfa.period.${method} must be a number greater than or equal to 10`;
+      }
+    });
 
     const sendSMS = opts.sendSMS;
     const sendEmail = opts.sendEmail;
@@ -232,7 +235,7 @@ class MFAAdapter extends AuthAdapter {
       const totp = new TOTP({
         algorithm: this.algorithm,
         digits: this.digits,
-        period: this.period,
+        period: this.period['TOTP'],
         secret: Secret.fromBase32(secret),
       });
       const valid = totp.validate({
@@ -337,7 +340,7 @@ class MFAAdapter extends AuthAdapter {
     }
     token = token.substring(0, this.digits);
     await Promise.resolve(this.smsCallback(token, mobile));
-    const expiry = new Date(new Date().getTime() + this.period * 1000);
+    const expiry = new Date(new Date().getTime() + this.period['SMS'] * 1000);
     return { token, expiry };
   }
 
@@ -351,7 +354,7 @@ class MFAAdapter extends AuthAdapter {
     }
     token = token.substring(0, this.digits);
     await Promise.resolve(this.emailCallback(token, email));
-    const expiry = new Date(new Date().getTime() + this.period * 1000);
+    const expiry = new Date(new Date().getTime() + this.period['EMAIL'] * 1000);
     return { token, expiry };
   }
   async confirmSMSOTP(inputData, authData) {
@@ -401,7 +404,7 @@ class MFAAdapter extends AuthAdapter {
     const totp = new TOTP({
       algorithm: this.algorithm,
       digits: this.digits,
-      period: this.period,
+      period: this.period['TOTP'],
       secret: Secret.fromBase32(secret),
     });
     const valid = totp.validate({
