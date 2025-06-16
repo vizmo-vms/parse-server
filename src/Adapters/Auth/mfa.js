@@ -6,6 +6,7 @@
  * @param {Array<String>} options.options - Supported MFA methods. Must include `"SMS"` or `"TOTP"`.
  * @param {Number} [options.digits=6] - The number of digits for the one-time password (OTP). Must be between 4 and 10.
  * @param {Number} [options.period=30] - The validity period of the OTP in seconds. Must be greater than 10.
+ * @param {Object} [options.period={TOTP:30,SMS:30,EMAIL:150}] - The validity period of the OTP in seconds for different mfa factors. Must be greater than 30.
  * @param {String} [options.algorithm="SHA1"] - The algorithm used for TOTP generation. Defaults to `"SHA1"`.
  * @param {Function} [options.sendSMS] - A callback function for sending SMS OTPs. Required if `"SMS"` is included in `options`.
  *
@@ -92,7 +93,7 @@ class MFAAdapter extends AuthAdapter {
       throw 'mfa.options must include SMS or TOTP or EMAIL';
     }
     const digits = opts.digits || 6;
-    const period = opts.period || 30;
+    this.period = {};
 
     // Define default periods for each method
     const defaultPeriods = {
@@ -103,34 +104,29 @@ class MFAAdapter extends AuthAdapter {
 
     if (typeof opts.period === 'number') {
       validOptions.forEach(method => {
-        this.period[method] = this.period;
+        this.period[method] = opts.period;
       });
     } else if (opts.period && typeof opts.period === 'object') {
-      Object.keys(this.period).forEach(method => {
-        if (this.periods.hasOwnProperty(method) && typeof this.period[method] === 'number') {
-          this.period[method] = this.period[method] ?? defaultPeriods[method] ?? 30;
+      Object.keys(opts.period).forEach(method => {
+        if (opts.period.hasOwnProperty(method) && typeof opts.period[method] === 'number') {
+          this.period[method] = opts.period[method] ?? defaultPeriods[method] ?? 30;
         }
       });
-      this.period = { ...opts.period };
     } else {
       validOptions.forEach(method => {
         this.period[method] = defaultPeriods[method] ?? 30;
       });
     }
-
     if (typeof digits !== 'number') {
       throw 'mfa.digits must be a number';
-    }
-    if (typeof period !== 'number') {
-      throw 'mfa.period must be a number';
     }
     if (digits < 4 || digits > 10) {
       throw 'mfa.digits must be between 4 and 10';
     }
 
     validOptions.forEach(method => {
-      if (typeof this.period[method] !== 'number' || this.period[method] < 10) {
-        throw `mfa.period.${method} must be a number greater than or equal to 10`;
+      if (typeof this.period[method] !== 'number' || this.period[method] < 30) {
+        throw `mfa.period.${method} must be a number greater than or equal to 30`;
       }
     });
 
@@ -145,7 +141,6 @@ class MFAAdapter extends AuthAdapter {
     this.smsCallback = sendSMS;
     this.emailCallback = sendEmail;
     this.digits = digits;
-    this.period = period;
     this.algorithm = opts.algorithm || 'SHA1';
   }
   validateSetUp(mfaData) {
