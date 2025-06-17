@@ -47,5 +47,5 @@ export function md5Hash(string: string): string {
 }
 
 export function sha256Hash(string: string): string {
-  return crypto.createHash('sha256').update(string).digest('hex');
+  return createHash('sha256').update(string).digest('hex');
 }
