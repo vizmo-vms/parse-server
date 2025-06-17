@@ -97,8 +97,8 @@ class MFAAdapter extends AuthAdapter {
 
     // Define default periods for each method
     const defaultPeriods = {
-      SMS: 30, // 5 minutes for SMS
-      EMAIL: 30, // 5 minutes for Email
+      SMS: 30, // 30 seconds for SMS
+      EMAIL: 300, // 5 minutes for Email
       TOTP: 30, // 30 seconds for TOTP
     };
 
