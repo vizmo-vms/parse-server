@@ -1541,7 +1541,7 @@ describe('OTP TOTP auth adatper', () => {
     expect(response.mfa.recovery).toBeDefined();
     expect(response.mfa.recovery.split(',').length).toEqual(2);
     await user.fetch();
-    expect(user.get('authData').mfa).toEqual({ status: 'enabled' });
+    expect(user.get('authData').mfa).toEqual({ status: 'enabled', type: 'TOTP' });
   });
 
   it('can login with valid token', async () => {
@@ -1575,7 +1575,7 @@ describe('OTP TOTP auth adatper', () => {
     }).then(res => res.data);
     expect(response.objectId).toEqual(user.id);
     expect(response.sessionToken).toBeDefined();
-    expect(response.authData).toEqual({ mfa: { status: 'enabled' } });
+    expect(response.authData).toEqual({ mfa: { status: 'enabled', type: 'TOTP' } });
     expect(Object.keys(response).sort()).toEqual(
       [
         'objectId',
@@ -1763,7 +1763,7 @@ describe('OTP SMS auth adatper', () => {
 
     await user.save({ authData: { mfa: { mobile, token: code } } }, { sessionToken });
     await user.fetch({ sessionToken });
-    expect(user.get('authData')).toEqual({ mfa: { status: 'enabled' } });
+    expect(user.get('authData')).toEqual({ mfa: { status: 'enabled', type: 'SMS' } });
   });
 
   it('future logins require SMS code', async () => {
@@ -1819,7 +1819,7 @@ describe('OTP SMS auth adatper', () => {
     }).then(res => res.data);
     expect(response.objectId).toEqual(user.id);
     expect(response.sessionToken).toBeDefined();
-    expect(response.authData).toEqual({ mfa: { status: 'enabled' } });
+    expect(response.authData).toEqual({ mfa: { status: 'enabled', type: 'SMS' } });
     expect(Object.keys(response).sort()).toEqual(
       [
         'objectId',
