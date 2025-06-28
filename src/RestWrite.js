@@ -877,7 +877,7 @@ RestWrite.prototype._validatePasswordRequirements = function () {
         }
         if (this.data.password.indexOf(results[0].username) >= 0)
         { return Promise.reject(
-          new Parse.Error(Parse.Error.VALIDATION_ERROR, containsUsernameError)
+            new Parse.Error(Parse.Error.VALIDATION_ERROR, containsUsernameError)
         ); }
         return Promise.resolve();
       });
@@ -904,8 +904,8 @@ RestWrite.prototype._validatePasswordHistory = function () {
         let oldPasswords = [];
         if (user._password_history)
         { oldPasswords = _.take(
-          user._password_history,
-          this.config.passwordPolicy.maxPasswordHistory - 1
+            user._password_history,
+            this.config.passwordPolicy.maxPasswordHistory - 1
         ); }
         oldPasswords.push(user.password);
         const newPassword = this.data.password;
@@ -913,7 +913,7 @@ RestWrite.prototype._validatePasswordHistory = function () {
         const promises = oldPasswords.map(function (hash) {
           return passwordCrypto.compare(newPassword, hash).then(result => {
             if (result)
-            // reject if there is a match
+              // reject if there is a match
             { return Promise.reject('REPEAT_PASSWORD'); }
             return Promise.resolve();
           });
@@ -925,12 +925,12 @@ RestWrite.prototype._validatePasswordHistory = function () {
           })
           .catch(err => {
             if (err === 'REPEAT_PASSWORD')
-            // a match was found
+              // a match was found
             { return Promise.reject(
-              new Parse.Error(
-                Parse.Error.VALIDATION_ERROR,
-                `New password should not be the same as last ${this.config.passwordPolicy.maxPasswordHistory} passwords.`
-              )
+                new Parse.Error(
+                  Parse.Error.VALIDATION_ERROR,
+                  `New password should not be the same as last ${this.config.passwordPolicy.maxPasswordHistory} passwords.`
+                )
             ); }
             throw err;
           });
@@ -1460,6 +1460,18 @@ RestWrite.prototype.runDatabaseOperation = function () {
       `Cannot modify user ${this.query.objectId}.`,
       this.config
     );
+  }
+  // Handle authData updates for _User class
+  if (this.className === '_User' && this.query && this.data.authData) {
+    if (!this.auth.isMaster && !this.auth.isMaintenance) {
+      // For non-master key requests, remove authData from the update
+      delete this.data.authData;
+      // If no other fields to update, return early
+      if (Object.keys(this.data).length === 0) {
+        this.response = { response: {} };
+        return Promise.resolve();
+      }
+    }
   }
 
   if (this.className === '_Product' && this.data.download) {
