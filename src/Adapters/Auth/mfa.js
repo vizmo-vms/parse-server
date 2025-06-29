@@ -108,7 +108,7 @@ class MFAAdapter extends AuthAdapter {
       });
     } else if (opts.period && typeof opts.period === 'object') {
       Object.keys(opts.period).forEach(method => {
-        if (opts.period.hasOwnProperty(method) && typeof opts.period[method] === 'number') {
+        if (typeof opts.period[method] === 'number') {
           this.period[method] = opts.period[method] ?? defaultPeriods[method] ?? 30;
         }
       });

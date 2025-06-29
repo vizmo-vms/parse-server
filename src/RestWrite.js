@@ -526,7 +526,9 @@ RestWrite.prototype.ensureUniqueAuthDataId = async function () {
     key => this.data.authData[key] && this.data.authData[key].id
   );
 
-  if (!hasAuthDataId) { return; }
+  if (!hasAuthDataId) {
+    return;
+  }
 
   const r = await Auth.findUsersWithAuthData(this.config, this.data.authData);
   const results = this.filteredObjectsByACL(r);
@@ -833,7 +835,9 @@ RestWrite.prototype._validateEmail = function () {
 };
 
 RestWrite.prototype._validatePasswordPolicy = function () {
-  if (!this.config.passwordPolicy) { return Promise.resolve(); }
+  if (!this.config.passwordPolicy) {
+    return Promise.resolve();
+  }
   return this._validatePasswordRequirements().then(() => {
     return this._validatePasswordHistory();
   });
@@ -867,18 +871,20 @@ RestWrite.prototype._validatePasswordRequirements = function () {
   if (this.config.passwordPolicy.doNotAllowUsername === true) {
     if (this.data.username) {
       // username is not passed during password reset
-      if (this.data.password.indexOf(this.data.username) >= 0)
-      { return Promise.reject(new Parse.Error(Parse.Error.VALIDATION_ERROR, containsUsernameError)); }
+      if (this.data.password.indexOf(this.data.username) >= 0) {
+        return Promise.reject(new Parse.Error(Parse.Error.VALIDATION_ERROR, containsUsernameError));
+      }
     } else {
       // retrieve the User object using objectId during password reset
       return this.config.database.find('_User', { objectId: this.objectId() }).then(results => {
         if (results.length != 1) {
           throw undefined;
         }
-        if (this.data.password.indexOf(results[0].username) >= 0)
-        { return Promise.reject(
+        if (this.data.password.indexOf(results[0].username) >= 0) {
+          return Promise.reject(
             new Parse.Error(Parse.Error.VALIDATION_ERROR, containsUsernameError)
-        ); }
+          );
+        }
         return Promise.resolve();
       });
     }
@@ -902,19 +908,21 @@ RestWrite.prototype._validatePasswordHistory = function () {
         }
         const user = results[0];
         let oldPasswords = [];
-        if (user._password_history)
-        { oldPasswords = _.take(
+        if (user._password_history) {
+          oldPasswords = _.take(
             user._password_history,
             this.config.passwordPolicy.maxPasswordHistory - 1
-        ); }
+          );
+        }
         oldPasswords.push(user.password);
         const newPassword = this.data.password;
         // compare the new password hash with all old password hashes
         const promises = oldPasswords.map(function (hash) {
           return passwordCrypto.compare(newPassword, hash).then(result => {
-            if (result)
+            if (result) {
               // reject if there is a match
-            { return Promise.reject('REPEAT_PASSWORD'); }
+              return Promise.reject('REPEAT_PASSWORD');
+            }
             return Promise.resolve();
           });
         });
@@ -924,14 +932,15 @@ RestWrite.prototype._validatePasswordHistory = function () {
             return Promise.resolve();
           })
           .catch(err => {
-            if (err === 'REPEAT_PASSWORD')
+            if (err === 'REPEAT_PASSWORD') {
               // a match was found
-            { return Promise.reject(
+              return Promise.reject(
                 new Parse.Error(
                   Parse.Error.VALIDATION_ERROR,
                   `New password should not be the same as last ${this.config.passwordPolicy.maxPasswordHistory} passwords.`
                 )
-            ); }
+              );
+            }
             throw err;
           });
       });
@@ -965,10 +974,16 @@ RestWrite.prototype.createSessionTokenIfNeeded = async function () {
     // Get verification conditions which can be booleans or functions; the purpose of this async/await
     // structure is to avoid unnecessarily executing subsequent functions if previous ones fail in the
     // conditional statement below, as a developer may decide to execute expensive operations in them
-    const verifyUserEmails = async () => this.config.verifyUserEmails === true || (typeof this.config.verifyUserEmails === 'function' && await Promise.resolve(this.config.verifyUserEmails(request)) === true);
-    const preventLoginWithUnverifiedEmail = async () => this.config.preventLoginWithUnverifiedEmail === true || (typeof this.config.preventLoginWithUnverifiedEmail === 'function' && await Promise.resolve(this.config.preventLoginWithUnverifiedEmail(request)) === true);
+    const verifyUserEmails = async () =>
+      this.config.verifyUserEmails === true ||
+      (typeof this.config.verifyUserEmails === 'function' &&
+        (await Promise.resolve(this.config.verifyUserEmails(request))) === true);
+    const preventLoginWithUnverifiedEmail = async () =>
+      this.config.preventLoginWithUnverifiedEmail === true ||
+      (typeof this.config.preventLoginWithUnverifiedEmail === 'function' &&
+        (await Promise.resolve(this.config.preventLoginWithUnverifiedEmail(request))) === true);
     // If verification is required
-    if (await verifyUserEmails() && await preventLoginWithUnverifiedEmail()) {
+    if ((await verifyUserEmails()) && (await preventLoginWithUnverifiedEmail())) {
       this.storage.rejectSignup = true;
       return;
     }
@@ -1462,7 +1477,12 @@ RestWrite.prototype.runDatabaseOperation = function () {
     );
   }
   // Handle authData updates for _User class
-  if (this.className === '_User' && this.query && this.data.authData) {
+  if (
+    this.className === '_User' &&
+    this.query &&
+    this.data &&
+    Object.prototype.hasOwnProperty.call(this.data, 'authData')
+  ) {
     if (!this.auth.isMaster && !this.auth.isMaintenance) {
       // For non-master key requests, remove authData from the update
       delete this.data.authData;
@@ -1791,7 +1811,9 @@ RestWrite.prototype.buildParseObjects = function () {
         }
         let curObj = parentVal;
         for (let i = 1; i < splittedKey.length - 1; i++) {
-          if (typeof curObj[splittedKey[i]] === 'undefined') curObj[splittedKey[i]] = {};
+          if (typeof curObj[splittedKey[i]] === 'undefined') {
+            curObj[splittedKey[i]] = {};
+          }
           curObj = curObj[splittedKey[i]];
         }
         curObj[splittedKey[splittedKey.length - 1]] = data[key];
