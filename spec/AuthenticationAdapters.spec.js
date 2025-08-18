@@ -1761,7 +1761,7 @@ describe('OTP SMS auth adatper', () => {
     expect(authData['+11111111111']).toBeDefined();
     expect(Object.keys(authData['+11111111111'])).toEqual(['token', 'expiry']);
 
-    await user.save({ authData: { mfa: { mobile, token: code } } }, { useMasterKey:true });
+    await user.save({ authData: { mfa: { mobile, token: code } } }, { useMasterKey: true });
     await user.fetch({ sessionToken: user.getSessionToken() });
     expect(user.get('authData')).toEqual({ mfa: { status: 'enabled', type: 'SMS' } });
   });
