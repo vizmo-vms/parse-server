@@ -1771,7 +1771,7 @@ describe('OTP SMS auth adatper', () => {
     const spy = spyOn(mfa, 'sendSMS').and.callThrough();
     await user.save(
       { authData: { mfa: { mobile: '+11111111111' } } },
-      { useMasterKey:true }
+      { useMasterKey: true }
     );
 
     await user.save(
