@@ -1534,7 +1534,7 @@ describe('OTP TOTP auth adatper', () => {
     const token = totp.generate();
     await user.save(
       { authData: { mfa: { secret: secret.base32, token } } },
-      { sessionToken: user.getSessionToken() }
+      { useMasterKey: true }
     );
     const response = user.get('authDataResponse');
     expect(response.mfa).toBeDefined();
@@ -1557,7 +1557,7 @@ describe('OTP TOTP auth adatper', () => {
     const token = totp.generate();
     await user.save(
       { authData: { mfa: { secret: secret.base32, token } } },
-      { sessionToken: user.getSessionToken() }
+      { useMasterKey: true }
     );
     const response = await request({
       headers,
@@ -1603,7 +1603,7 @@ describe('OTP TOTP auth adatper', () => {
     const token = totp.generate();
     await user.save(
       { authData: { mfa: { secret: secret.base32, token } } },
-      { sessionToken: user.getSessionToken() }
+      { useMasterKey: true }
     );
 
     const new_secret = new OTPAuth.Secret();
@@ -1618,7 +1618,7 @@ describe('OTP TOTP auth adatper', () => {
       {
         authData: { mfa: { secret: new_secret.base32, token: new_token, old: totp.generate() } },
       },
-      { sessionToken: user.getSessionToken() }
+      { useMasterKey: true }
     );
     await user.fetch({ useMasterKey: true });
     expect(user.get('authData').mfa.secret).toEqual(new_secret.base32);
@@ -1637,7 +1637,7 @@ describe('OTP TOTP auth adatper', () => {
     const token = totp.generate();
     await user.save(
       { authData: { mfa: { secret: secret.base32, token } } },
-      { sessionToken: user.getSessionToken() }
+      { useMasterKey: true }
     );
 
     const new_secret = new OTPAuth.Secret();
@@ -1673,8 +1673,9 @@ describe('OTP TOTP auth adatper', () => {
     const token = totp.generate();
     await user.save(
       { authData: { mfa: { secret: secret.base32, token } } },
-      { sessionToken: user.getSessionToken() }
+      { useMasterKey: true }
     );
+    await user.fetch({ useMasterKey: true });
     await expectAsync(Parse.User.logIn('username', 'password')).toBeRejectedWith(
       new Parse.Error(Parse.Error.OTHER_CAUSE, 'Missing additional authData mfa')
     );
@@ -1693,7 +1694,7 @@ describe('OTP TOTP auth adatper', () => {
     const token = totp.generate();
     await user.save(
       { authData: { mfa: { secret: secret.base32, token } } },
-      { sessionToken: user.getSessionToken() }
+      { useMasterKey: true }
     );
     await expectAsync(
       request({
@@ -1749,10 +1750,9 @@ describe('OTP SMS auth adatper', () => {
 
   it('can enroll', async () => {
     const user = await Parse.User.signUp('username', 'password');
-    const sessionToken = user.getSessionToken();
     const spy = spyOn(mfa, 'sendSMS').and.callThrough();
-    await user.save({ authData: { mfa: { mobile: '+11111111111' } } }, { sessionToken });
-    await user.fetch({ sessionToken });
+    await user.save({ authData: { mfa: { mobile: '+11111111111' } } }, { useMasterKey:true });
+    await user.fetch({ sessionToken: user.getSessionToken() });
     expect(user.get('authData')).toEqual({ mfa: { status: 'disabled' } });
     expect(spy).toHaveBeenCalledWith(code, '+11111111111');
     await user.fetch({ useMasterKey: true });
@@ -1761,8 +1761,8 @@ describe('OTP SMS auth adatper', () => {
     expect(authData['+11111111111']).toBeDefined();
     expect(Object.keys(authData['+11111111111'])).toEqual(['token', 'expiry']);
 
-    await user.save({ authData: { mfa: { mobile, token: code } } }, { sessionToken });
-    await user.fetch({ sessionToken });
+    await user.save({ authData: { mfa: { mobile, token: code } } }, { useMasterKey:true });
+    await user.fetch({ sessionToken: user.getSessionToken() });
     expect(user.get('authData')).toEqual({ mfa: { status: 'enabled', type: 'SMS' } });
   });
 
@@ -1771,12 +1771,12 @@ describe('OTP SMS auth adatper', () => {
     const spy = spyOn(mfa, 'sendSMS').and.callThrough();
     await user.save(
       { authData: { mfa: { mobile: '+11111111111' } } },
-      { sessionToken: user.getSessionToken() }
+      { useMasterKey:true }
     );
 
     await user.save(
       { authData: { mfa: { mobile, token: code } } },
-      { sessionToken: user.getSessionToken() }
+      { useMasterKey:true }
     );
 
     spy.calls.reset();
