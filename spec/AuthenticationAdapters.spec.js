@@ -1776,7 +1776,7 @@ describe('OTP SMS auth adatper', () => {
 
     await user.save(
       { authData: { mfa: { mobile, token: code } } },
-      { useMasterKey:true }
+      { useMasterKey: true }
     );
 
     spy.calls.reset();
