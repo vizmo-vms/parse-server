@@ -1751,7 +1751,7 @@ describe('OTP SMS auth adatper', () => {
   it('can enroll', async () => {
     const user = await Parse.User.signUp('username', 'password');
     const spy = spyOn(mfa, 'sendSMS').and.callThrough();
-    await user.save({ authData: { mfa: { mobile: '+11111111111' } } }, { useMasterKey:true });
+    await user.save({ authData: { mfa: { mobile: '+11111111111' } } }, { useMasterKey: true });
     await user.fetch({ sessionToken: user.getSessionToken() });
     expect(user.get('authData')).toEqual({ mfa: { status: 'disabled' } });
     expect(spy).toHaveBeenCalledWith(code, '+11111111111');
