@@ -25,9 +25,9 @@ export interface SchemaOptions {
   /* Is true if Parse Server will reject any attempts to modify the schema while the server is running.
   :DEFAULT: false */
   lockSchemas: ?boolean;
-  /* (Optional) Keep indexes that are present in the database but not defined in the schema. Set this to `true` if you are adding indexes manually, so that they won't be removed when running schema migration. Default is `false`.
-  :DEFAULT: false */
-  keepUnknownIndexes: ?boolean;
+  /* Drops indexes that are not defined in the schema and are present in the database. Set this to `false` if you are adding indexes manually so that they won't be dropped when running schema migration.
+  :DEFAULT: true */
+  dropUnknownIndexes: ?boolean;
   /* Execute a callback before running schema migrations. */
   beforeMigration: ?() => void | Promise<void>;
   /* Execute a callback after running schema migrations. */
