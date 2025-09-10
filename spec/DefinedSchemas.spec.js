@@ -394,6 +394,29 @@ describe('DefinedSchemas', () => {
       expect(schema.indexes).toBeUndefined();
     });
 
+    it('should delete unknown indexes when dropUnknownIndexes is set to true', async () => {
+      const server = await reconfigureServer();
+
+      let indexes = { complex: { createdAt: 1, updatedAt: 1 } };
+
+      let schemas = { definitions: [{ className: 'Test', indexes }], dropUnknownIndexes: true };
+      await new DefinedSchemas(schemas, server.config).execute();
+
+      indexes = {};
+      schemas = { definitions: [{ className: 'Test', indexes }], dropUnknownIndexes: true };
+      // Change indexes
+      await new DefinedSchemas(schemas, server.config).execute();
+      let schema = await new Parse.Schema('Test').get();
+      cleanUpIndexes(schema);
+      expect(schema.indexes).toBeUndefined();
+
+      // Update
+      await new DefinedSchemas(schemas, server.config).execute();
+      schema = await new Parse.Schema('Test').get();
+      cleanUpIndexes(schema);
+      expect(schema.indexes).toBeUndefined();
+    });
+
     it('should keep unknown indexes when dropUnknownIndexes is false', async () => {
       const server = await reconfigureServer();
 
