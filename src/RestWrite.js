@@ -1477,13 +1477,22 @@ RestWrite.prototype.runDatabaseOperation = function () {
     );
   }
   // Handle authData updates for _User class
+
   if (
     this.className === '_User' &&
     this.query &&
     this.data &&
     Object.prototype.hasOwnProperty.call(this.data, 'authData')
   ) {
-    if (!this.auth.isMaster && !this.auth.isMaintenance) {
+    const isSelfUpdate =
+      this.auth &&
+      this.auth.user &&
+      this.auth.user.id &&
+      this.query &&
+      this.query.objectId &&
+      this.auth.user.id === this.query.objectId;
+
+    if (!this.auth.isMaster && !this.auth.isMaintenance && !isSelfUpdate) {
       // For non-master key requests, remove authData from the update
       delete this.data.authData;
       // If no other fields to update, return early

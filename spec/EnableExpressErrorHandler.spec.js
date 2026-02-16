@@ -25,7 +25,7 @@ describe('Enable express error handler', () => {
       fail('Should throw error');
     } catch (response) {
       expect(response).toBeDefined();
-      expect(response.status).toEqual(500);
+      expect(response.status).toEqual(404);
       parseServer.server.close(done);
     }
   });

@@ -13,7 +13,6 @@ const passwordCrypto = require('../lib/password');
 const Config = require('../lib/Config');
 const cryptoUtils = require('../lib/cryptoUtils');
 
-
 describe('allowExpiredAuthDataToken option', () => {
   it('should accept true value', async () => {
     await reconfigureServer({ allowExpiredAuthDataToken: true });
@@ -1621,9 +1620,9 @@ describe('Parse.User testing', () => {
     await user2.signUp();
     try {
       await user2._linkWith('facebook');
-      done.fail();
+      fail('Should have thrown an error');
     } catch (error) {
-      expect(error.code).toEqual(Parse.Error.ACCOUNT_ALREADY_LINKED);
+      expect(error.message).toEqual('this auth is already used');
       done();
     }
   });
@@ -1774,7 +1773,7 @@ describe('Parse.User testing', () => {
     const model = await Parse.User._logInWith('facebook');
     Parse.User._registerAuthenticationProvider(mockProvider);
     const objectId = model.id;
-    await model._linkWith('myoauth');
+    await model._linkWith('myoauth', {}, { useMasterKey: true });
     Parse.User._registerAuthenticationProvider(secondProvider);
     await Parse.User.logOut();
     await Parse.User._logInWith('facebook');
@@ -2264,68 +2263,80 @@ describe('Parse.User testing', () => {
   });
 
   describe('case insensitive signup not allowed', () => {
-    it_id('464eddc2-7a46-413d-888e-b43b040f1511')(it)('signup should fail with duplicate case insensitive username with basic setter', async () => {
-      const user = new Parse.User();
-      user.set('username', 'test1');
-      user.set('password', 'test');
-      await user.signUp();
+    it_id('464eddc2-7a46-413d-888e-b43b040f1511')(it)(
+      'signup should fail with duplicate case insensitive username with basic setter',
+      async () => {
+        const user = new Parse.User();
+        user.set('username', 'test1');
+        user.set('password', 'test');
+        await user.signUp();
 
-      const user2 = new Parse.User();
-      user2.set('username', 'Test1');
-      user2.set('password', 'test');
-      await expectAsync(user2.signUp()).toBeRejectedWith(
-        new Parse.Error(Parse.Error.USERNAME_TAKEN, 'Account already exists for this username.')
-      );
-    });
+        const user2 = new Parse.User();
+        user2.set('username', 'Test1');
+        user2.set('password', 'test');
+        await expectAsync(user2.signUp()).toBeRejectedWith(
+          new Parse.Error(Parse.Error.USERNAME_TAKEN, 'Account already exists for this username.')
+        );
+      }
+    );
 
-    it_id('1cef005b-d5f0-4699-af0c-bb0af27d2437')(it)('signup should fail with duplicate case insensitive username with field specific setter', async () => {
-      const user = new Parse.User();
-      user.setUsername('test1');
-      user.setPassword('test');
-      await user.signUp();
+    it_id('1cef005b-d5f0-4699-af0c-bb0af27d2437')(it)(
+      'signup should fail with duplicate case insensitive username with field specific setter',
+      async () => {
+        const user = new Parse.User();
+        user.setUsername('test1');
+        user.setPassword('test');
+        await user.signUp();
 
-      const user2 = new Parse.User();
-      user2.setUsername('Test1');
-      user2.setPassword('test');
-      await expectAsync(user2.signUp()).toBeRejectedWith(
-        new Parse.Error(Parse.Error.USERNAME_TAKEN, 'Account already exists for this username.')
-      );
-    });
+        const user2 = new Parse.User();
+        user2.setUsername('Test1');
+        user2.setPassword('test');
+        await expectAsync(user2.signUp()).toBeRejectedWith(
+          new Parse.Error(Parse.Error.USERNAME_TAKEN, 'Account already exists for this username.')
+        );
+      }
+    );
 
-    it_id('12735529-98d1-42c0-b437-3b47fe78ddde')(it)('signup should fail with duplicate case insensitive email', async () => {
-      const user = new Parse.User();
-      user.setUsername('test1');
-      user.setPassword('test');
-      user.setEmail('test@example.com');
-      await user.signUp();
+    it_id('12735529-98d1-42c0-b437-3b47fe78ddde')(it)(
+      'signup should fail with duplicate case insensitive email',
+      async () => {
+        const user = new Parse.User();
+        user.setUsername('test1');
+        user.setPassword('test');
+        user.setEmail('test@example.com');
+        await user.signUp();
 
-      const user2 = new Parse.User();
-      user2.setUsername('test2');
-      user2.setPassword('test');
-      user2.setEmail('Test@Example.Com');
-      await expectAsync(user2.signUp()).toBeRejectedWith(
-        new Parse.Error(Parse.Error.EMAIL_TAKEN, 'Account already exists for this email address.')
-      );
-    });
+        const user2 = new Parse.User();
+        user2.setUsername('test2');
+        user2.setPassword('test');
+        user2.setEmail('Test@Example.Com');
+        await expectAsync(user2.signUp()).toBeRejectedWith(
+          new Parse.Error(Parse.Error.EMAIL_TAKEN, 'Account already exists for this email address.')
+        );
+      }
+    );
 
-    it_id('66e51d52-2420-4b62-8a0d-c7e1b384763e')(it)('edit should fail with duplicate case insensitive email', async () => {
-      const user = new Parse.User();
-      user.setUsername('test1');
-      user.setPassword('test');
-      user.setEmail('test@example.com');
-      await user.signUp();
+    it_id('66e51d52-2420-4b62-8a0d-c7e1b384763e')(it)(
+      'edit should fail with duplicate case insensitive email',
+      async () => {
+        const user = new Parse.User();
+        user.setUsername('test1');
+        user.setPassword('test');
+        user.setEmail('test@example.com');
+        await user.signUp();
 
-      const user2 = new Parse.User();
-      user2.setUsername('test2');
-      user2.setPassword('test');
-      user2.setEmail('Foo@Example.Com');
-      await user2.signUp();
+        const user2 = new Parse.User();
+        user2.setUsername('test2');
+        user2.setPassword('test');
+        user2.setEmail('Foo@Example.Com');
+        await user2.signUp();
 
-      user2.setEmail('Test@Example.Com');
-      await expectAsync(user2.save()).toBeRejectedWith(
-        new Parse.Error(Parse.Error.EMAIL_TAKEN, 'Account already exists for this email address.')
-      );
-    });
+        user2.setEmail('Test@Example.Com');
+        await expectAsync(user2.save()).toBeRejectedWith(
+          new Parse.Error(Parse.Error.EMAIL_TAKEN, 'Account already exists for this email address.')
+        );
+      }
+    );
 
     describe('anonymous users', () => {
       it('should not fail on case insensitive matches', async () => {
@@ -2671,7 +2682,10 @@ describe('Parse.User testing', () => {
             expect(b.code).toEqual(209);
             expect(b.error).toBe('Permission denied');
 
-            expect(loggerErrorSpy).toHaveBeenCalledWith('Sanitized error:', jasmine.stringContaining('Invalid session token'));
+            expect(loggerErrorSpy).toHaveBeenCalledWith(
+              'Sanitized error:',
+              jasmine.stringContaining('Invalid session token')
+            );
             done();
           });
         });
@@ -2962,119 +2976,125 @@ describe('Parse.User testing', () => {
       });
   });
 
-  it_id('1be98368-19ac-4c77-8531-762a114f43fb')(it)('should send email when upgrading from anon', async done => {
-    await reconfigureServer();
-    let emailCalled = false;
-    let emailOptions;
-    const emailAdapter = {
-      sendVerificationEmail: options => {
-        emailOptions = options;
-        emailCalled = true;
-      },
-      sendPasswordResetEmail: () => Promise.resolve(),
-      sendMail: () => Promise.resolve(),
-    };
-    await reconfigureServer({
-      appName: 'unused',
-      verifyUserEmails: true,
-      emailAdapter: emailAdapter,
-      publicServerURL: 'http://localhost:8378/1',
-    });
-    // Simulate anonymous user save
-    return request({
-      method: 'POST',
-      url: 'http://localhost:8378/1/classes/_User',
-      headers: {
-        'X-Parse-Application-Id': Parse.applicationId,
-        'X-Parse-REST-API-Key': 'rest',
-        'Content-Type': 'application/json',
-      },
-      body: {
-        authData: {
-          anonymous: { id: '00000000-0000-0000-0000-000000000001' },
+  it_id('1be98368-19ac-4c77-8531-762a114f43fb')(it)(
+    'should send email when upgrading from anon',
+    async done => {
+      await reconfigureServer();
+      let emailCalled = false;
+      let emailOptions;
+      const emailAdapter = {
+        sendVerificationEmail: options => {
+          emailOptions = options;
+          emailCalled = true;
         },
-      },
-    })
-      .then(response => {
-        const user = response.data;
-        return request({
-          method: 'PUT',
-          url: 'http://localhost:8378/1/classes/_User/' + user.objectId,
-          headers: {
-            'X-Parse-Application-Id': Parse.applicationId,
-            'X-Parse-Session-Token': user.sessionToken,
-            'X-Parse-REST-API-Key': 'rest',
-            'Content-Type': 'application/json',
+        sendPasswordResetEmail: () => Promise.resolve(),
+        sendMail: () => Promise.resolve(),
+      };
+      await reconfigureServer({
+        appName: 'unused',
+        verifyUserEmails: true,
+        emailAdapter: emailAdapter,
+        publicServerURL: 'http://localhost:8378/1',
+      });
+      // Simulate anonymous user save
+      return request({
+        method: 'POST',
+        url: 'http://localhost:8378/1/classes/_User',
+        headers: {
+          'X-Parse-Application-Id': Parse.applicationId,
+          'X-Parse-REST-API-Key': 'rest',
+          'Content-Type': 'application/json',
+        },
+        body: {
+          authData: {
+            anonymous: { id: '00000000-0000-0000-0000-000000000001' },
           },
-          body: {
-            authData: { anonymous: null },
-            username: 'user',
-            email: 'user@email.com',
-            password: 'password',
-          },
+        },
+      })
+        .then(response => {
+          const user = response.data;
+          return request({
+            method: 'PUT',
+            url: 'http://localhost:8378/1/classes/_User/' + user.objectId,
+            headers: {
+              'X-Parse-Application-Id': Parse.applicationId,
+              'X-Parse-Session-Token': user.sessionToken,
+              'X-Parse-REST-API-Key': 'rest',
+              'Content-Type': 'application/json',
+            },
+            body: {
+              authData: { anonymous: null },
+              username: 'user',
+              email: 'user@email.com',
+              password: 'password',
+            },
+          });
+        })
+        .then(() => jasmine.timeout())
+        .then(() => {
+          expect(emailCalled).toBe(true);
+          expect(emailOptions).not.toBeUndefined();
+          expect(emailOptions.user.get('email')).toEqual('user@email.com');
+          done();
+        })
+        .catch(err => {
+          jfail(err);
+          fail('no request should fail: ' + JSON.stringify(err));
+          done();
         });
-      })
-      .then(() => jasmine.timeout())
-      .then(() => {
-        expect(emailCalled).toBe(true);
-        expect(emailOptions).not.toBeUndefined();
-        expect(emailOptions.user.get('email')).toEqual('user@email.com');
-        done();
-      })
-      .catch(err => {
-        jfail(err);
-        fail('no request should fail: ' + JSON.stringify(err));
-        done();
-      });
-  });
+    }
+  );
 
-  it_id('bf668670-39fa-44d3-a9a9-cad52f36d272')(it)('should not send email when email is not a string', async done => {
-    let emailCalled = false;
-    let emailOptions;
-    const emailAdapter = {
-      sendVerificationEmail: options => {
-        emailOptions = options;
-        emailCalled = true;
-      },
-      sendPasswordResetEmail: () => Promise.resolve(),
-      sendMail: () => Promise.resolve(),
-    };
-    await reconfigureServer({
-      appName: 'unused',
-      verifyUserEmails: true,
-      emailAdapter: emailAdapter,
-      publicServerURL: 'http://localhost:8378/1',
-    });
-    const user = new Parse.User();
-    user.set('username', 'asdf@jkl.com');
-    user.set('password', 'zxcv');
-    user.set('email', 'asdf@jkl.com');
-    await user.signUp();
-    request({
-      method: 'POST',
-      url: 'http://localhost:8378/1/requestPasswordReset',
-      headers: {
-        'X-Parse-Application-Id': Parse.applicationId,
-        'X-Parse-Session-Token': user.sessionToken,
-        'X-Parse-REST-API-Key': 'rest',
-        'Content-Type': 'application/json',
-      },
-      body: {
-        email: { $regex: '^asd' },
-      },
-    })
-      .then(res => {
-        fail('no request should succeed: ' + JSON.stringify(res));
-        done();
-      })
-      .catch(err => {
-        expect(emailCalled).toBeTruthy();
-        expect(emailOptions).toBeDefined();
-        expect(err.status).toBe(400);
-        expect(err.text).toMatch('{"code":125,"error":"you must provide a valid email string"}');
-        done();
+  it_id('bf668670-39fa-44d3-a9a9-cad52f36d272')(it)(
+    'should not send email when email is not a string',
+    async done => {
+      let emailCalled = false;
+      let emailOptions;
+      const emailAdapter = {
+        sendVerificationEmail: options => {
+          emailOptions = options;
+          emailCalled = true;
+        },
+        sendPasswordResetEmail: () => Promise.resolve(),
+        sendMail: () => Promise.resolve(),
+      };
+      await reconfigureServer({
+        appName: 'unused',
+        verifyUserEmails: true,
+        emailAdapter: emailAdapter,
+        publicServerURL: 'http://localhost:8378/1',
       });
-  });
+      const user = new Parse.User();
+      user.set('username', 'asdf@jkl.com');
+      user.set('password', 'zxcv');
+      user.set('email', 'asdf@jkl.com');
+      await user.signUp();
+      request({
+        method: 'POST',
+        url: 'http://localhost:8378/1/requestPasswordReset',
+        headers: {
+          'X-Parse-Application-Id': Parse.applicationId,
+          'X-Parse-Session-Token': user.sessionToken,
+          'X-Parse-REST-API-Key': 'rest',
+          'Content-Type': 'application/json',
+        },
+        body: {
+          email: { $regex: '^asd' },
+        },
+      })
+        .then(res => {
+          fail('no request should succeed: ' + JSON.stringify(res));
+          done();
+        })
+        .catch(err => {
+          expect(emailCalled).toBeTruthy();
+          expect(emailOptions).toBeDefined();
+          expect(err.status).toBe(400);
+          expect(err.text).toMatch('{"code":125,"error":"you must provide a valid email string"}');
+          done();
+        });
+    }
+  );
 
   it('should aftersave with full object', done => {
     let hit = 0;
@@ -3396,7 +3416,10 @@ describe('Parse.User testing', () => {
       })
       .catch(err => {
         expect(err.message).toBe('Permission denied');
-        expect(loggerErrorSpy).toHaveBeenCalledWith('Sanitized error:', jasmine.stringContaining("Clients aren't allowed to manually update email verification."));
+        expect(loggerErrorSpy).toHaveBeenCalledWith(
+          'Sanitized error:',
+          jasmine.stringContaining("Clients aren't allowed to manually update email verification.")
+        );
 
         done();
       });
@@ -4419,7 +4442,10 @@ describe('login as other user', () => {
     } catch (err) {
       expect(err.data.code).toBe(Parse.Error.OPERATION_FORBIDDEN);
       expect(err.data.error).toBe('Permission denied');
-      expect(loggerErrorSpy).toHaveBeenCalledWith('Sanitized error:', jasmine.stringContaining('master key is required'));
+      expect(loggerErrorSpy).toHaveBeenCalledWith(
+        'Sanitized error:',
+        jasmine.stringContaining('master key is required')
+      );
     }
 
     const sessionsQuery = new Parse.Query(Parse.Session);
