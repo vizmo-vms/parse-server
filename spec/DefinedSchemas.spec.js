@@ -371,7 +371,7 @@ describe('DefinedSchemas', () => {
       expect(schema.indexes).toEqual(indexes);
     });
 
-    it('should delete unknown indexes when dropUnknownIndexes is not set', async () => {
+    it('should delete unknown indexes when keepUnknownIndexes is not set', async () => {
       const server = await reconfigureServer();
 
       let indexes = { complex: { createdAt: 1, updatedAt: 1 } };
@@ -394,16 +394,16 @@ describe('DefinedSchemas', () => {
       expect(schema.indexes).toBeUndefined();
     });
 
-    it('should delete unknown indexes when dropUnknownIndexes is set to true', async () => {
+    it('should delete unknown indexes when keepUnknownIndexes is set to false', async () => {
       const server = await reconfigureServer();
 
       let indexes = { complex: { createdAt: 1, updatedAt: 1 } };
 
-      let schemas = { definitions: [{ className: 'Test', indexes }], dropUnknownIndexes: true };
+      let schemas = { definitions: [{ className: 'Test', indexes }], keepUnknownIndexes: false };
       await new DefinedSchemas(schemas, server.config).execute();
 
       indexes = {};
-      schemas = { definitions: [{ className: 'Test', indexes }], dropUnknownIndexes: true };
+      schemas = { definitions: [{ className: 'Test', indexes }], keepUnknownIndexes: false };
       // Change indexes
       await new DefinedSchemas(schemas, server.config).execute();
       let schema = await new Parse.Schema('Test').get();
@@ -417,15 +417,15 @@ describe('DefinedSchemas', () => {
       expect(schema.indexes).toBeUndefined();
     });
 
-    it('should keep unknown indexes when dropUnknownIndexes is false', async () => {
+    it('should keep unknown indexes when keepUnknownIndexes is true', async () => {
       const server = await reconfigureServer();
 
       const indexes = { complex: { createdAt: 1, updatedAt: 1 } };
 
-      let schemas = { definitions: [{ className: 'Test', indexes }], dropUnknownIndexes: false };
+      let schemas = { definitions: [{ className: 'Test', indexes }], keepUnknownIndexes: true };
       await new DefinedSchemas(schemas, server.config).execute();
 
-      schemas = { definitions: [{ className: 'Test', indexes: {} }], dropUnknownIndexes: false };
+      schemas = { definitions: [{ className: 'Test', indexes: {} }], keepUnknownIndexes: true };
       // Change indexes
       await new DefinedSchemas(schemas, server.config).execute();
       let schema = await new Parse.Schema('Test').get();
@@ -439,16 +439,16 @@ describe('DefinedSchemas', () => {
       expect(schema.indexes).toEqual(indexes);
     });
 
-    it('should not recreate changed indexes when dropUnknownIndexes is false', async () => {
+    it('should not recreate changed indexes when keepUnknownIndexes is true', async () => {
       const server = await reconfigureServer();
 
       let indexes = { complex: { createdAt: 1, updatedAt: 1 } };
 
-      let schemas = { definitions: [{ className: 'Test', indexes }], dropUnknownIndexes: false };
+      let schemas = { definitions: [{ className: 'Test', indexes }], keepUnknownIndexes: true };
       await new DefinedSchemas(schemas, server.config).execute();
 
       indexes = { complex: { createdAt: 1 } };
-      schemas = { definitions: [{ className: 'Test', indexes }], dropUnknownIndexes: false };
+      schemas = { definitions: [{ className: 'Test', indexes }], keepUnknownIndexes: true };
 
       // Change indexes
       await new DefinedSchemas(schemas, server.config).execute();
@@ -713,41 +713,44 @@ describe('DefinedSchemas', () => {
     expect(logger.error).toHaveBeenCalledWith(`Failed to run migrations: ${error.toString()}`);
   });
 
-  it_id('a18bf4f2-25c8-4de3-b986-19cb1ab163b8')(it)('should perform migration in parallel without failing', async () => {
-    const server = await reconfigureServer();
-    const logger = require('../lib/logger').logger;
-    spyOn(logger, 'error').and.callThrough();
-    const migrationOptions = {
-      definitions: [
-        {
-          className: 'Test',
-          fields: { aField: { type: 'String' } },
-          indexes: { aField: { aField: 1 } },
-          classLevelPermissions: {
-            create: { requiresAuthentication: true },
+  it_id('a18bf4f2-25c8-4de3-b986-19cb1ab163b8')(it)(
+    'should perform migration in parallel without failing',
+    async () => {
+      const server = await reconfigureServer();
+      const logger = require('../lib/logger').logger;
+      spyOn(logger, 'error').and.callThrough();
+      const migrationOptions = {
+        definitions: [
+          {
+            className: 'Test',
+            fields: { aField: { type: 'String' } },
+            indexes: { aField: { aField: 1 } },
+            classLevelPermissions: {
+              create: { requiresAuthentication: true },
+            },
           },
-        },
-      ],
-    };
+        ],
+      };
 
-    // Simulate parallel deployment
-    await Promise.all([
-      new DefinedSchemas(migrationOptions, server.config).execute(),
-      new DefinedSchemas(migrationOptions, server.config).execute(),
-      new DefinedSchemas(migrationOptions, server.config).execute(),
-      new DefinedSchemas(migrationOptions, server.config).execute(),
-      new DefinedSchemas(migrationOptions, server.config).execute(),
-    ]);
+      // Simulate parallel deployment
+      await Promise.all([
+        new DefinedSchemas(migrationOptions, server.config).execute(),
+        new DefinedSchemas(migrationOptions, server.config).execute(),
+        new DefinedSchemas(migrationOptions, server.config).execute(),
+        new DefinedSchemas(migrationOptions, server.config).execute(),
+        new DefinedSchemas(migrationOptions, server.config).execute(),
+      ]);
 
-    const testSchema = (await Parse.Schema.all()).find(
-      ({ className }) => className === migrationOptions.definitions[0].className
-    );
+      const testSchema = (await Parse.Schema.all()).find(
+        ({ className }) => className === migrationOptions.definitions[0].className
+      );
 
-    expect(testSchema.indexes.aField).toEqual({ aField: 1 });
-    expect(testSchema.fields.aField).toEqual({ type: 'String' });
-    expect(testSchema.classLevelPermissions.create).toEqual({ requiresAuthentication: true });
-    expect(logger.error).toHaveBeenCalledTimes(0);
-  });
+      expect(testSchema.indexes.aField).toEqual({ aField: 1 });
+      expect(testSchema.fields.aField).toEqual({ type: 'String' });
+      expect(testSchema.classLevelPermissions.create).toEqual({ requiresAuthentication: true });
+      expect(logger.error).toHaveBeenCalledTimes(0);
+    }
+  );
 
   it('should not affect cacheAdapter', async () => {
     const server = await reconfigureServer();
