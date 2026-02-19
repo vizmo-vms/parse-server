@@ -485,13 +485,12 @@ export function handleParseErrors(err, req, res, next) {
       default:
         httpStatus = 400;
     }
-    if (req.config && req.config.enableExpressErrorHandler) {
-      err.status = httpStatus;
-      return next(err);
-    }
     res.status(httpStatus);
     res.json({ code: err.code, error: err.message });
     log.error('Parse error: ', err);
+    if (req.config && req.config.enableExpressErrorHandler) {
+      return next(err);
+    }
   } else if (err.status && err.message) {
     res.status(err.status);
     res.json({ error: err.message });
