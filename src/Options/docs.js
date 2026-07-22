@@ -4,7 +4,7 @@
  * @property {Function} beforeMigration Execute a callback before running schema migrations.
  * @property {Any} definitions Rest representation on Parse.Schema https://docs.parseplatform.org/rest/guide/#adding-a-schema
  * @property {Boolean} deleteExtraFields Is true if Parse Server should delete any fields not defined in a schema definition. This should only be used during development.
- * @property {Boolean} keepUnknownIndexes (Optional) Keep indexes that are present in the database but not defined in the schema. Set this to `true` if you are adding indexes manually, so that they won't be removed when running schema migration. Default is `false`.
+ * @property {Boolean} dropUnknownIndexes Drops indexes that are not defined in the schema and are present in the database. Set this to `false` if you are adding indexes manually so that they won't be dropped when running schema migration.
  * @property {Boolean} lockSchemas Is true if Parse Server will reject any attempts to modify the schema while the server is running.
  * @property {Boolean} recreateModifiedFields Is true if Parse Server should recreate any fields that are different between the current database schema and theschema definition. This should only be used during development.
  * @property {Boolean} strict Is true if Parse Server should exit if schema update fail.
@@ -328,6 +328,7 @@
  * @property {Boolean} enableSchemaHooks Enables database real-time hooks to update single schema cache. Set to `true` if using multiple Parse Servers instances connected to the same database. Failing to do so will cause a schema change to not propagate to all instances and re-syncing will only happen when the instances restart. To use this feature with MongoDB, a replica set cluster with [change stream](https://docs.mongodb.com/manual/changeStreams/#availability) support is required.
  * @property {Boolean} forceServerObjectId The MongoDB driver option to force server to assign _id values instead of driver.
  * @property {Number} heartbeatFrequencyMS The MongoDB driver option to specify the frequency in milliseconds at which the driver checks the state of the MongoDB deployment.
+ * @property {Boolean} ignoreUndefined The MongoDB driver option to set whether to ignore undefined values in BSON documents.
  * @property {Boolean} loadBalanced The MongoDB driver option to instruct the driver it is connecting to a load balancer fronting a mongos like service.
  * @property {Number} localThresholdMS The MongoDB driver option to specify the size (in milliseconds) of the latency window for selecting among multiple suitable MongoDB instances.
  * @property {LogClientEvent[]} logClientEvents An array of MongoDB client event configurations to enable logging of specific events.

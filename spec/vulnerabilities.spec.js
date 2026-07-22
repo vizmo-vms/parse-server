@@ -5706,7 +5706,7 @@ describe('Vulnerabilities', () => {
         });
         expect(response.data.authData?.mfa?.secret).toBeUndefined();
         expect(response.data.authData?.mfa?.recovery).toBeUndefined();
-        expect(response.data.authData?.mfa).toEqual({ status: 'enabled' });
+        expect(response.data.authData?.mfa).toEqual({ status: 'enabled', type: 'TOTP' });
       });
 
       it('returns same authData from /users/me and /users/:id', async () => {
@@ -5755,7 +5755,7 @@ describe('Vulnerabilities', () => {
         });
         // Both should return the same sanitized authData
         expect(meResponse.data.authData).toEqual(idResponse.data.authData);
-        expect(meResponse.data.authData?.mfa).toEqual({ status: 'enabled' });
+        expect(meResponse.data.authData?.mfa).toEqual({ status: 'enabled', type: 'TOTP' });
       });
     });
 
@@ -5808,7 +5808,7 @@ describe('Vulnerabilities', () => {
         });
         expect(response.data.authData?.mfa?.secret).toBeUndefined();
         expect(response.data.authData?.mfa?.recovery).toBeUndefined();
-        expect(response.data.authData?.mfa).toEqual({ status: 'enabled' });
+        expect(response.data.authData?.mfa).toEqual({ status: 'enabled', type: 'TOTP' });
       });
 
       it('does not leak raw MFA authData via GET /verifyPassword', async () => {
@@ -5846,7 +5846,7 @@ describe('Vulnerabilities', () => {
         });
         expect(response.data.authData?.mfa?.secret).toBeUndefined();
         expect(response.data.authData?.mfa?.recovery).toBeUndefined();
-        expect(response.data.authData?.mfa).toEqual({ status: 'enabled' });
+        expect(response.data.authData?.mfa).toEqual({ status: 'enabled', type: 'TOTP' });
       });
     });
 

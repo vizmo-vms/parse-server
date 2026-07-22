@@ -1792,7 +1792,7 @@ describe('OTP TOTP auth adatper', () => {
     expect(response.mfa.recovery).toBeDefined();
     expect(response.mfa.recovery.split(',').length).toEqual(2);
     await user.fetch();
-    expect(user.get('authData').mfa).toEqual({ status: 'enabled' });
+    expect(user.get('authData').mfa).toEqual({ status: 'enabled', type: 'TOTP' });
   });
 
   it('can login with valid token', async () => {
@@ -1826,7 +1826,7 @@ describe('OTP TOTP auth adatper', () => {
     }).then(res => res.data);
     expect(response.objectId).toEqual(user.id);
     expect(response.sessionToken).toBeDefined();
-    expect(response.authData).toEqual({ mfa: { status: 'enabled' } });
+    expect(response.authData).toEqual({ mfa: { status: 'enabled', type: 'TOTP' } });
     expect(Object.keys(response).sort()).toEqual(
       [
         'objectId',
@@ -2144,7 +2144,7 @@ describe('OTP SMS auth adatper', () => {
 
     await user.save({ authData: { mfa: { mobile, token: code } } }, { sessionToken });
     await user.fetch({ sessionToken });
-    expect(user.get('authData')).toEqual({ mfa: { status: 'enabled' } });
+    expect(user.get('authData')).toEqual({ mfa: { status: 'enabled', type: 'SMS' } });
   });
 
   it('future logins require SMS code', async () => {
@@ -2163,7 +2163,10 @@ describe('OTP SMS auth adatper', () => {
     spy.calls.reset();
 
     await expectAsync(Parse.User.logIn('username', 'password')).toBeRejectedWith(
-      new Parse.Error(Parse.Error.OTHER_CAUSE, 'Missing additional authData mfa')
+      new Parse.Error(
+        Parse.Error.OTHER_CAUSE,
+        'Missing additional authData mfa Send request for additional auth data'
+      )
     );
     const res = await request({
       headers,
@@ -2197,7 +2200,7 @@ describe('OTP SMS auth adatper', () => {
     }).then(res => res.data);
     expect(response.objectId).toEqual(user.id);
     expect(response.sessionToken).toBeDefined();
-    expect(response.authData).toEqual({ mfa: { status: 'enabled' } });
+    expect(response.authData).toEqual({ mfa: { status: 'enabled', type: 'SMS' } });
     expect(Object.keys(response).sort()).toEqual(
       [
         'objectId',
@@ -2218,5 +2221,126 @@ describe('OTP SMS auth adatper', () => {
     const spy = spyOn(mfa, 'sendSMS').and.callThrough();
     await Parse.User.logIn('username', 'password');
     expect(spy).not.toHaveBeenCalled();
+  });
+});
+
+describe('OTP EMAIL auth adapter', () => {
+  const headers = {
+    'Content-Type': 'application/json',
+    'X-Parse-Application-Id': 'test',
+    'X-Parse-REST-API-Key': 'rest',
+  };
+  let code;
+  const mfa = {
+    enabled: true,
+    options: ['EMAIL'],
+    sendEmail(emailCode, email) {
+      expect(emailCode.length).toEqual(6);
+      expect(email).toEqual('user@example.com');
+      code = emailCode;
+    },
+    digits: 6,
+    period: { EMAIL: 300 },
+  };
+
+  beforeEach(async () => {
+    code = '';
+    await reconfigureServer({ auth: { mfa } });
+  });
+
+  it('can enroll and keeps pending email keys hashed', async () => {
+    const user = await Parse.User.signUp('username', 'password');
+    const sessionToken = user.getSessionToken();
+
+    await user.save(
+      { authData: { mfa: { email: 'user@example.com' } } },
+      { sessionToken }
+    );
+    await user.fetch({ useMasterKey: true });
+    const pending = user.get('authData').mfa.pending;
+    expect(pending['user@example.com']).toBeUndefined();
+    expect(Object.keys(pending).length).toBe(1);
+
+    await user.save(
+      { authData: { mfa: { email: 'user@example.com', token: code } } },
+      { sessionToken }
+    );
+    await user.fetch({ sessionToken });
+    expect(user.get('authData')).toEqual({ mfa: { status: 'enabled', type: 'EMAIL' } });
+  });
+
+  it('allows login before enrollment is confirmed', async () => {
+    const user = await Parse.User.signUp('username', 'password');
+    await user.save({ authData: { mfa: { email: 'user@example.com' } } });
+
+    const loggedInUser = await Parse.User.logIn('username', 'password');
+
+    expect(loggedInUser.id).toBe(user.id);
+  });
+
+  it('requests and validates an email token on login', async () => {
+    const user = await Parse.User.signUp('username', 'password');
+    const sessionToken = user.getSessionToken();
+    await user.save(
+      { authData: { mfa: { email: 'user@example.com' } } },
+      { sessionToken }
+    );
+    await user.save(
+      { authData: { mfa: { email: 'user@example.com', token: code } } },
+      { sessionToken }
+    );
+
+    const requestTokenResponse = await request({
+      headers,
+      method: 'POST',
+      url: 'http://localhost:8378/1/login',
+      body: JSON.stringify({
+        username: 'username',
+        password: 'password',
+        authData: { mfa: { token: 'request' } },
+      }),
+    }).catch(error => error.data);
+    expect(requestTokenResponse).toEqual({
+      code: Parse.Error.SCRIPT_FAILED,
+      error: 'Please enter the token',
+    });
+
+    const response = await request({
+      headers,
+      method: 'POST',
+      url: 'http://localhost:8378/1/login',
+      body: JSON.stringify({
+        username: 'username',
+        password: 'password',
+        authData: { mfa: { token: code } },
+      }),
+    }).then(response => response.data);
+
+    expect(response.objectId).toBe(user.id);
+    expect(response.sessionToken).toBeDefined();
+    expect(response.authData).toEqual({ mfa: { status: 'enabled', type: 'EMAIL' } });
+  });
+
+  it('rejects an invalid email token', async () => {
+    const user = await Parse.User.signUp('username', 'password');
+    await user.save({ authData: { mfa: { email: 'user@example.com' } } });
+    await user.save({ authData: { mfa: { email: 'user@example.com', token: code } } });
+    await expectAsync(
+      request({
+        headers,
+        method: 'POST',
+        url: 'http://localhost:8378/1/login',
+        body: JSON.stringify({
+          username: 'username',
+          password: 'password',
+          authData: { mfa: { token: 'invalid' } },
+        }),
+      }).catch(error => {
+        throw error.data;
+      })
+    ).toBeRejectedWith({
+      code: Parse.Error.SCRIPT_FAILED,
+      error: 'Invalid MFA token 1',
+    });
   });
 });

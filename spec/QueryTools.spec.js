@@ -800,6 +800,25 @@ describe('matchesQuery', function () {
     expect(matchesQuery(message, q)).toBe(false);
   });
 
+  it('should ignore null values in pointer arrays', () => {
+    const message = {
+      id: new Id('Message', 'O2'),
+      profiles: [null, pointer('Profile', 'yes')],
+    };
+    const q = new Parse.Query('Message');
+    q.containedIn('profiles', [Parse.Object.fromJSON({ className: 'Profile', objectId: 'yes' })]);
+
+    expect(matchesQuery(message, q)).toBe(true);
+  });
+
+  it('should not match a null pointer', () => {
+    const message = { id: new Id('Message', 'O2'), profile: null };
+    const q = new Parse.Query('Message');
+    q.equalTo('profile', Parse.Object.fromJSON({ className: 'Profile', objectId: 'yes' }));
+
+    expect(matchesQuery(message, q)).toBe(false);
+  });
+
   it('should support notContainedIn with pointers', () => {
     let message = {
       id: new Id('Message', 'O1'),

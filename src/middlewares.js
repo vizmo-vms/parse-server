@@ -596,9 +596,6 @@ export function enforceRouteAllowList(req, res, next) {
 export function handleParseErrors(err, req, res, next) {
   const log = (req.config && req.config.loggerController) || defaultLogger;
   if (err instanceof Parse.Error) {
-    if (req.config && req.config.enableExpressErrorHandler) {
-      return next(err);
-    }
     const signupUsernameTakenLevel =
       req.config?.logLevels?.signupUsernameTaken || 'info';
     let httpStatus;
@@ -625,6 +622,9 @@ export function handleParseErrors(err, req, res, next) {
       }
     } else {
       log.error('Parse error: ', err);
+    }
+    if (req.config && req.config.enableExpressErrorHandler) {
+      return next(err);
     }
   } else if (err.status && err.message) {
     res.status(err.status);

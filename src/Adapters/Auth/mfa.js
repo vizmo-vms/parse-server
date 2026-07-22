@@ -3,11 +3,12 @@
  *
  * @class MFAAdapter
  * @param {Object} options - The adapter options.
- * @param {Array<String>} options.options - Supported MFA methods. Must include `"SMS"` or `"TOTP"`.
+ * @param {Array<String>} options.options - Supported MFA methods. Must include `"SMS"`, `"TOTP"`, or `"EMAIL"`.
  * @param {Number} [options.digits=6] - The number of digits for the one-time password (OTP). Must be between 4 and 10.
- * @param {Number} [options.period=30] - The validity period of the OTP in seconds. Must be greater than 10.
+ * @param {Number|Object} [options.period=30] - The validity period of the OTP in seconds, globally or per MFA method.
  * @param {String} [options.algorithm="SHA1"] - The algorithm used for TOTP generation. Defaults to `"SHA1"`.
  * @param {Function} [options.sendSMS] - A callback function for sending SMS OTPs. Required if `"SMS"` is included in `options`.
+ * @param {Function} [options.sendEmail] - A callback function for sending email OTPs. Required if `"EMAIL"` is included in `options`.
  *
  * @description
  * ## Parse Server Configuration
@@ -42,6 +43,10 @@
  *   - Generates two single-use recovery codes during enrollment. Each recovery code can be used once
  *     in place of a TOTP token and is consumed after use.
  *
+ * - **EMAIL**:
+ *   - Requires a valid email address.
+ *   - Uses the `sendEmail` callback to send OTPs for setup and login.
+ *
  * ## MFA Payload
  * The adapter requires the following `authData` fields:
  * - **For SMS-based MFA**:
@@ -50,6 +55,9 @@
  * - **For TOTP-based MFA**:
  *   - `secret`: The TOTP secret key for the user (required for setup).
  *   - `token`: The OTP provided by the user for login or verification.
+ * - **For email-based MFA**:
+ *   - `email`: The user's email address (required for setup).
+ *   - `token`: The OTP provided by the user for setup confirmation or login.
  *
  * ## Example Payloads
  * ### SMS Setup Payload
@@ -79,7 +87,7 @@
  */
 
 import { TOTP, Secret } from 'otpauth';
-import { randomString } from '../../cryptoUtils';
+import { randomString, sha256Hash } from '../../cryptoUtils';
 import AuthAdapter from './AuthAdapter';
 class MFAAdapter extends AuthAdapter {
   validateOptions(opts) {
@@ -89,35 +97,50 @@ class MFAAdapter extends AuthAdapter {
     }
     this.sms = validOptions.includes('SMS');
     this.totp = validOptions.includes('TOTP');
-    if (!this.sms && !this.totp) {
-      throw 'mfa.options must include SMS or TOTP';
+    this.email = validOptions.includes('EMAIL');
+    if (!this.sms && !this.totp && !this.email) {
+      throw 'mfa.options must include SMS or TOTP or EMAIL';
     }
     const digits = opts.digits || 6;
-    const period = opts.period || 30;
+    const defaultPeriods = { SMS: 30, EMAIL: 300, TOTP: 30 };
+    this.period = {};
+    if (typeof opts.period === 'number') {
+      validOptions.forEach(method => (this.period[method] = opts.period));
+    } else {
+      validOptions.forEach(method => {
+        this.period[method] = opts.period?.[method] ?? defaultPeriods[method];
+      });
+    }
     if (typeof digits !== 'number') {
       throw 'mfa.digits must be a number';
-    }
-    if (typeof period !== 'number') {
-      throw 'mfa.period must be a number';
     }
     if (digits < 4 || digits > 10) {
       throw 'mfa.digits must be between 4 and 10';
     }
-    if (period < 10) {
-      throw 'mfa.period must be greater than 10';
-    }
+    validOptions.forEach(method => {
+      if (typeof this.period[method] !== 'number' || this.period[method] < 30) {
+        throw `mfa.period.${method} must be a number greater than or equal to 30`;
+      }
+    });
     const sendSMS = opts.sendSMS;
+    const sendEmail = opts.sendEmail;
+    if (this.email && typeof sendEmail !== 'function') {
+      throw 'mfa.sendEmail callback must be defined when using EMAIL OTPs';
+    }
     if (this.sms && typeof sendSMS !== 'function') {
       throw 'mfa.sendSMS callback must be defined when using SMS OTPs';
     }
     this.smsCallback = sendSMS;
+    this.emailCallback = sendEmail;
     this.digits = digits;
-    this.period = period;
     this.algorithm = opts.algorithm || 'SHA1';
   }
   validateSetUp(mfaData) {
     if (mfaData.mobile && this.sms) {
       return this.setupMobileOTP(mfaData.mobile);
+    }
+    if (mfaData.email && this.email) {
+      return this.setupEmailOTP(mfaData.email);
     }
     if (this.totp) {
       return this.setupTOTP(mfaData);
@@ -130,7 +153,28 @@ class MFAAdapter extends AuthAdapter {
     };
     const token = loginData.token;
     const auth = req.original.get('authData') || {};
-    const { secret, recovery, mobile, token: saved, expiry } = auth.mfa || {};
+    const { secret, recovery, mobile, email, token: saved, expiry } = auth.mfa || {};
+    if (this.email && email) {
+      if (token === 'request') {
+        const { token: sendToken, expiry } = await this.sendEmail(email);
+        auth.mfa = { email, token: sendToken, expiry };
+        await req.config.database.update(
+          '_User',
+          { objectId: req.original.id, 'authData.mfa.email': email },
+          { authData: auth }
+        );
+        throw 'Please enter the token';
+      }
+      if (!saved || token !== saved) {
+        throw 'Invalid MFA token 1';
+      }
+      if (new Date() > expiry) {
+        throw 'Invalid MFA token 2';
+      }
+      delete auth.mfa.token;
+      delete auth.mfa.expiry;
+      return { save: auth.mfa };
+    }
     if (this.sms && mobile) {
       if (token === 'request') {
         const { token: sendToken, expiry } = await this.sendSMS(mobile);
@@ -170,7 +214,7 @@ class MFAAdapter extends AuthAdapter {
       const totp = new TOTP({
         algorithm: this.algorithm,
         digits: this.digits,
-        period: this.period,
+        period: this.period.TOTP,
         secret: Secret.fromBase32(secret),
       });
       const valid = totp.validate({
@@ -188,9 +232,15 @@ class MFAAdapter extends AuthAdapter {
     }
     if (authData.mobile && this.sms) {
       if (!authData.token) {
-        throw 'MFA is already set up on this account';
+        throw 'Token required to confirm MFA changes.';
       }
       return this.confirmSMSOTP(authData, req.original.get('authData')?.mfa || {});
+    }
+    if (authData.email && this.email) {
+      if (!authData.token) {
+        throw 'Token required to confirm MFA changes.';
+      }
+      return this.confirmEmailOTP(authData, req.original.get('authData')?.mfa || {});
     }
     if (this.totp) {
       await this.validateLogin({ token: authData.old }, null, req);
@@ -202,15 +252,16 @@ class MFAAdapter extends AuthAdapter {
     if (req.master) {
       return;
     }
+    let type;
     if (this.totp && authData.secret) {
-      return {
-        status: 'enabled',
-      };
+      type = 'TOTP';
+    } else if (this.sms && authData.mobile) {
+      type = 'SMS';
+    } else if (this.email && authData.email) {
+      type = 'EMAIL';
     }
-    if (this.sms && authData.mobile) {
-      return {
-        status: 'enabled',
-      };
+    if (type) {
+      return { status: 'enabled', type };
     }
     return {
       status: 'disabled',
@@ -218,7 +269,7 @@ class MFAAdapter extends AuthAdapter {
   }
 
   policy(req, auth) {
-    if (this.sms && auth?.pending && Object.keys(auth).length === 1) {
+    if (auth?.pending && Object.keys(auth).length === 1) {
       return 'default';
     }
     return 'additional';
@@ -238,6 +289,17 @@ class MFAAdapter extends AuthAdapter {
     };
   }
 
+  async setupEmailOTP(email) {
+    const { token, expiry } = await this.sendEmail(email);
+    return {
+      save: {
+        pending: {
+          [sha256Hash(email)]: { token, expiry },
+        },
+      },
+    };
+  }
+
   async sendSMS(mobile) {
     if (!/^[+]*[(]{0,1}[0-9]{1,3}[)]{0,1}[-\s\./0-9]*$/g.test(mobile)) {
       throw 'Invalid mobile number.';
@@ -248,7 +310,21 @@ class MFAAdapter extends AuthAdapter {
     }
     token = token.substring(0, this.digits);
     await Promise.resolve(this.smsCallback(token, mobile));
-    const expiry = new Date(new Date().getTime() + this.period * 1000);
+    const expiry = new Date(new Date().getTime() + this.period.SMS * 1000);
+    return { token, expiry };
+  }
+
+  async sendEmail(email) {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      throw 'Invalid email address.';
+    }
+    let token = '';
+    while (token.length < this.digits) {
+      token += randomString(10).replace(/\D/g, '');
+    }
+    token = token.substring(0, this.digits);
+    await Promise.resolve(this.emailCallback(token, email));
+    const expiry = new Date(new Date().getTime() + this.period.EMAIL * 1000);
     return { token, expiry };
   }
 
@@ -271,6 +347,21 @@ class MFAAdapter extends AuthAdapter {
     };
   }
 
+  async confirmEmailOTP(inputData, authData) {
+    const { email, token } = inputData;
+    const emailHash = sha256Hash(email);
+    if (!authData.pending?.[emailHash]) {
+      throw 'This email is not pending';
+    }
+    const pendingData = authData.pending[emailHash];
+    if (token !== pendingData.token || new Date() > pendingData.expiry) {
+      throw 'Invalid MFA token';
+    }
+    delete authData.pending[emailHash];
+    authData.email = email;
+    return { save: authData };
+  }
+
   setupTOTP(mfaData) {
     const { secret, token } = mfaData;
     if (!secret || !token || secret.length < 20) {
@@ -279,7 +370,7 @@ class MFAAdapter extends AuthAdapter {
     const totp = new TOTP({
       algorithm: this.algorithm,
       digits: this.digits,
-      period: this.period,
+      period: this.period.TOTP,
       secret: Secret.fromBase32(secret),
     });
     const valid = totp.validate({

@@ -26,11 +26,11 @@ module.exports.SchemaOptions = {
     action: parsers.booleanParser,
     default: false,
   },
-  keepUnknownIndexes: {
-    env: 'PARSE_SERVER_SCHEMA_KEEP_UNKNOWN_INDEXES',
-    help: "(Optional) Keep indexes that are present in the database but not defined in the schema. Set this to `true` if you are adding indexes manually, so that they won't be removed when running schema migration. Default is `false`.",
+  dropUnknownIndexes: {
+    env: 'PARSE_SERVER_SCHEMA_DROP_UNKNOWN_INDEXES',
+    help: "Drops indexes that are not defined in the schema and are present in the database. Set this to `false` if you are adding indexes manually so that they won't be dropped when running schema migration.",
     action: parsers.booleanParser,
-    default: false,
+    default: true,
   },
   lockSchemas: {
     env: 'PARSE_SERVER_SCHEMA_LOCK_SCHEMAS',
@@ -1382,6 +1382,11 @@ module.exports.DatabaseOptions = {
     env: 'PARSE_SERVER_DATABASE_HEARTBEAT_FREQUENCY_MS',
     help: 'The MongoDB driver option to specify the frequency in milliseconds at which the driver checks the state of the MongoDB deployment.',
     action: parsers.numberParser('heartbeatFrequencyMS'),
+  },
+  ignoreUndefined: {
+    env: 'PARSE_SERVER_DATABASE_IGNORE_UNDEFINED',
+    help: 'The MongoDB driver option to set whether to ignore undefined values in BSON documents.',
+    action: parsers.booleanParser,
   },
   loadBalanced: {
     env: 'PARSE_SERVER_DATABASE_LOAD_BALANCED',

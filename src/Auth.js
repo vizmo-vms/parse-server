@@ -575,10 +575,11 @@ const checkIfUserHasProvidedConfiguredProvidersForLogin = (
     return;
   }
 
-  throw new Parse.Error(
-    Parse.Error.OTHER_CAUSE,
-    `Missing additional authData ${additionProvidersNotFound.join(',')}`
-  );
+  let message = `Missing additional authData ${additionProvidersNotFound.join(',')}`;
+  if (additionProvidersNotFound.includes('mfa') && !userAuthData.mfa?.secret) {
+    message += ' Send request for additional auth data';
+  }
+  throw new Parse.Error(Parse.Error.OTHER_CAUSE, message);
 };
 
 // Validate each authData step-by-step and return the provider responses

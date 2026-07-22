@@ -14,6 +14,7 @@ export interface SchemaOptions {
     deleteExtraFields?: boolean;
     recreateModifiedFields?: boolean;
     lockSchemas?: boolean;
+    dropUnknownIndexes?: boolean;
     beforeMigration?: () => void | Promise<void>;
     afterMigration?: () => void | Promise<void>;
 }
@@ -271,6 +272,7 @@ export interface DatabaseOptions {
     connectTimeoutMS?: number;
     directConnection?: boolean;
     forceServerObjectId?: boolean;
+    ignoreUndefined?: boolean;
     heartbeatFrequencyMS?: number;
     loadBalanced?: boolean;
     localThresholdMS?: number;

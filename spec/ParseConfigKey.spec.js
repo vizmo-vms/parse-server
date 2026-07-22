@@ -88,6 +88,7 @@ describe('Config Keys', () => {
         disableIndexFieldValidation: true,
         forceServerObjectId: false,
         heartbeatFrequencyMS: 10000,
+        ignoreUndefined: true,
         localThresholdMS: 15,
         maxConnecting: 2,
         maxIdleTimeMS: 60000,

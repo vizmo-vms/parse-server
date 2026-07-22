@@ -25,6 +25,23 @@ const headers = {
 };
 
 describe('miscellaneous', () => {
+  it('test afterSave with deeply nested keys (#7384)', async () => {
+    let triggerTime = 0;
+    Parse.Cloud.afterSave('GameScore', req => {
+      const object = req.object;
+      expect(object instanceof Parse.Object).toBeTrue();
+      expect(object.get('a')).toEqual({ b: { c: triggerTime } });
+      triggerTime += 1;
+    });
+
+    const object = new Parse.Object('GameScore');
+    object.set('a', { b: { c: 0 } });
+    await object.save();
+    object.set('a.b.c', 1);
+    await object.save();
+
+    expect(triggerTime).toBe(2);
+  });
   it('db contains document after successful save', async () => {
     const obj = new Parse.Object('TestObject');
     obj.set('foo', 'bar');

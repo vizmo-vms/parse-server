@@ -44,6 +44,18 @@ describe_only_db('mongo')('MongoStorageAdapter', () => {
     );
   });
 
+  it('passes ignoreUndefined to MongoDB client', async () => {
+    spyOn(MongoClient, 'connect').and.returnValue(Promise.resolve(fakeClient));
+    await new MongoStorageAdapter({
+      uri: databaseURI,
+      mongoOptions: { ignoreUndefined: true },
+    }).connect();
+    expect(MongoClient.connect).toHaveBeenCalledWith(
+      databaseURI,
+      jasmine.objectContaining({ ignoreUndefined: true })
+    );
+  });
+
   // https://github.com/parse-community/parse-server/pull/148#issuecomment-180407057
   it('preserves replica sets', () => {
     spyOn(MongoClient, 'connect').and.returnValue(Promise.resolve(fakeClient));
