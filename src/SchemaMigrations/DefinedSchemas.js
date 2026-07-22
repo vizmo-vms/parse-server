@@ -343,7 +343,7 @@ export class DefinedSchemas {
     }
 
     const indexesToAdd = [];
-    const shouldDropUnknownIndexes = this.schemaOptions.dropUnknownIndexes !== false;
+    const shouldDropUnknownIndexes = this.schemaOptions.keepUnknownIndexes !== true;
 
     // Check deletion
     if (cloudSchema.indexes) {
