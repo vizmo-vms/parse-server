@@ -22,7 +22,7 @@ export class ParseWebSocketServer {
       ws.on('error', error => {
         logger.error(error.message);
         logger.error(inspect(ws, false));
-        void parseWebSocket.disconnect('socket_error');
+        void parseWebSocket.disconnectAndTerminate('socket_error');
       });
       onConnect(parseWebSocket);
       // Send ping to client periodically
@@ -32,11 +32,7 @@ export class ParseWebSocketServer {
           ws.waitingForPong = true;
         } else {
           clearInterval(pingIntervalId);
-          try {
-            await parseWebSocket.disconnect('pong_timeout');
-          } finally {
-            ws.terminate();
-          }
+          await parseWebSocket.disconnectAndTerminate('pong_timeout');
         }
       }, config.websocketTimeout || 10 * 1000);
       parseWebSocket.on('disconnecting', () => clearInterval(pingIntervalId));
@@ -59,6 +55,7 @@ export class ParseWebSocket extends events.EventEmitter {
   ws: any;
   disconnectHandler: Function;
   disconnectPromise: Promise<void>;
+  terminated: boolean;
 
   constructor(ws: any) {
     super();
@@ -83,6 +80,22 @@ export class ParseWebSocket extends events.EventEmitter {
       .then(() => this.disconnectHandler?.(reason))
       .catch(error => logger.error('Failed running LiveQuery socket cleanup', error));
     return this.disconnectPromise;
+  }
+
+  async disconnectAndTerminate(reason: string): Promise<void> {
+    try {
+      await this.disconnect(reason);
+    } finally {
+      this.terminate();
+    }
+  }
+
+  terminate(): void {
+    if (this.terminated) {
+      return;
+    }
+    this.terminated = true;
+    this.ws.terminate();
   }
 
   send(message: any): void {

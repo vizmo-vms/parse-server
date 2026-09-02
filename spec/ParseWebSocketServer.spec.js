@@ -166,8 +166,14 @@ describe('ParseWebSocketServer', function () {
     server.close();
   });
 
-  it('runs disconnect cleanup on a socket error', async () => {
-    const onDisconnect = jasmine.createSpy('onDisconnect');
+  it('awaits disconnect cleanup before terminating a socket error', async () => {
+    let resolveCleanup;
+    const onDisconnect = jasmine.createSpy('onDisconnect').and.callFake(
+      () =>
+        new Promise(resolve => {
+          resolveCleanup = resolve;
+        })
+    );
     const onConnectCallback = jasmine
       .createSpy('onConnectCallback')
       .and.callFake(parseWebSocket => parseWebSocket.setDisconnectHandler(onDisconnect));
@@ -187,6 +193,15 @@ describe('ParseWebSocketServer', function () {
     await Promise.resolve();
 
     expect(onDisconnect).toHaveBeenCalledWith('socket_error');
+    expect(ws.terminate).not.toHaveBeenCalled();
+
+    resolveCleanup();
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(ws.terminate).toHaveBeenCalledTimes(1);
+    ws.emit('error', new Error('socket failed again'));
+    await new Promise(resolve => setImmediate(resolve));
+    expect(ws.terminate).toHaveBeenCalledTimes(1);
     server.close();
   });
 

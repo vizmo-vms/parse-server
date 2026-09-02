@@ -657,6 +657,14 @@ class ParseLiveQueryServer {
         }
       }
     }
+    }
+
+  _isActiveClient(parseWebsocket: any, client: any): boolean {
+    return (
+      !!client &&
+      this.clients.get(parseWebsocket.clientId) === client &&
+      (!client.parseWebSocket?.clientId || client.parseWebSocket === parseWebsocket)
+    );
   }
 
   _matchesSubscription(parseObject: any, subscription: any): boolean {
@@ -1036,22 +1044,30 @@ class ParseLiveQueryServer {
   }
 
   async _getSubscriptionLifecycleUserId(client: any, subscriptionInfo: any): Promise<string | void> {
+    if (subscriptionInfo.userIdResolved) {
+      return subscriptionInfo.userId;
+    }
     const sessionTokens = [subscriptionInfo.sessionToken, client.sessionToken];
     const attemptedTokens = new Set();
+    let userId;
     for (const sessionToken of sessionTokens) {
       if (!sessionToken || attemptedTokens.has(sessionToken)) {
         continue;
       }
       attemptedTokens.add(sessionToken);
       try {
-        const { userId } = await this.getAuthForSessionToken(sessionToken);
-        if (userId) {
-          return userId;
+        const auth = await this.getAuthForSessionToken(sessionToken);
+        if (auth.userId) {
+          userId = auth.userId;
+          break;
         }
       } catch (error) {
         logger.verbose('Could not resolve subscription lifecycle user identity');
       }
     }
+    subscriptionInfo.userId = userId;
+    subscriptionInfo.userIdResolved = true;
+    return userId;
   }
 
   async _getSubscriptionLifecycleEvent(
@@ -1100,16 +1116,21 @@ class ParseLiveQueryServer {
     if (typeof handler !== 'function') {
       return;
     }
-    await handler(
-      await this._getSubscriptionLifecycleEvent(
-        event,
-        client,
-        clientId,
-        requestId,
-        subscriptionInfo,
-        reason
-      )
+    const lifecycleEvent = await this._getSubscriptionLifecycleEvent(
+      event,
+      client,
+      clientId,
+      requestId,
+      subscriptionInfo,
+      reason
     );
+    if (event === 'subscribe') {
+      if (subscriptionInfo.ended) {
+        return;
+      }
+      subscriptionInfo.subscribeHandlerStarted = true;
+    }
+    await handler(lifecycleEvent);
   }
 
   async _removeSubscription(
@@ -1140,7 +1161,17 @@ class ParseLiveQueryServer {
       }
     }
 
-    if (emitEvents) {
+    if (subscriptionInfo.subscribePromise) {
+      try {
+        await subscriptionInfo.subscribePromise;
+      } catch (error) {
+        subscriptionInfo.subscribeFailed = true;
+      }
+    }
+
+    const shouldRunUnsubscribeHandler =
+      subscriptionInfo.subscribeStarted || subscriptionInfo.subscribeHandlerStarted;
+    if (emitEvents && shouldRunUnsubscribeHandler && !subscriptionInfo.subscribeFailed) {
       try {
         await this._runSubscriptionHandler(
           'unsubscribe',
@@ -1153,6 +1184,8 @@ class ParseLiveQueryServer {
       } catch (error) {
         logger.error(`Failed running subscription onUnsubscribe handler for ${className}`);
       }
+    }
+    if (emitEvents && subscriptionInfo.subscribeEventEmitted) {
       runLiveQueryEventHandlers({
         client,
         event: 'unsubscribe',
@@ -1183,12 +1216,18 @@ class ParseLiveQueryServer {
       return;
     }
     const client = this.clients.get(parseWebsocket.clientId);
+    if (!this._isActiveClient(parseWebsocket, client)) {
+      return;
+    }
     const className = request.query.className;
     let authCalled = false;
     try {
       const trigger = getTrigger(className, 'beforeSubscribe', Parse.applicationId);
       if (trigger) {
         const auth = await this.getAuthFromClient(client, request.requestId, request.sessionToken);
+        if (!this._isActiveClient(parseWebsocket, client)) {
+          return;
+        }
         authCalled = true;
         if (auth && auth.user) {
           request.user = auth.user;
@@ -1201,6 +1240,9 @@ class ParseLiveQueryServer {
 
         const query = request.query.toJSON();
         request.query = query;
+        if (!this._isActiveClient(parseWebsocket, client)) {
+          return;
+        }
       }
 
       if (className === '_Session') {
@@ -1210,6 +1252,9 @@ class ParseLiveQueryServer {
             request.requestId,
             request.sessionToken
           );
+          if (!this._isActiveClient(parseWebsocket, client)) {
+            return;
+          }
           if (auth && auth.user) {
             request.user = auth.user;
           }
@@ -1391,6 +1436,9 @@ class ParseLiveQueryServer {
         }
       }
 
+      if (!this._isActiveClient(parseWebsocket, client)) {
+        return;
+      }
       // Get subscription from subscriptions, create one if necessary
       const subscriptionHash = queryHash(request.query);
       // Add className to subscriptions if necessary
@@ -1428,7 +1476,14 @@ class ParseLiveQueryServer {
       // Add clientId to subscription
       subscription.addClientSubscription(parseWebsocket.clientId, request.requestId);
 
-      try {
+      subscriptionInfo.subscribePromise = (async () => {
+        const subscriptionHandlers = this.config.subscriptionHandlers?.[className];
+        if (subscriptionHandlers?.onSubscribe || subscriptionHandlers?.onUnsubscribe) {
+          await this._getSubscriptionLifecycleUserId(client, subscriptionInfo);
+        }
+        if (subscriptionInfo.ended) {
+          return;
+        }
         await this._runSubscriptionHandler(
           'subscribe',
           client,
@@ -1436,7 +1491,15 @@ class ParseLiveQueryServer {
           request.requestId,
           subscriptionInfo
         );
+        if (!subscriptionInfo.ended) {
+          subscriptionInfo.subscribeStarted = true;
+        }
+      })();
+
+      try {
+        await subscriptionInfo.subscribePromise;
       } catch (error) {
+        subscriptionInfo.subscribeFailed = true;
         await this._removeSubscription(
           client,
           parseWebsocket.clientId,
@@ -1448,6 +1511,10 @@ class ParseLiveQueryServer {
         throw error;
       }
 
+      if (subscriptionInfo.ended || !this._isActiveClient(parseWebsocket, client)) {
+        return;
+      }
+      subscriptionInfo.subscribeEventEmitted = true;
       client.pushSubscribe(request.requestId);
 
       logger.verbose(
@@ -1465,7 +1532,9 @@ class ParseLiveQueryServer {
       });
     } catch (e) {
       const error = resolveError(e);
-      Client.pushError(parseWebsocket, error.code, error.message, false, request.requestId);
+      if (this._isActiveClient(parseWebsocket, client)) {
+        Client.pushError(parseWebsocket, error.code, error.message, false, request.requestId);
+      }
       logger.error(
         `Failed running beforeSubscribe on ${className} with:\n Error: ` + JSON.stringify(error)
       );

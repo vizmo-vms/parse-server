@@ -667,6 +667,127 @@ describe('ParseLiveQueryServer', function () {
     ]);
   });
 
+  it('retains the user identity resolved at subscribe for unsubscribe', async () => {
+    const onSubscribe = jasmine.createSpy('onSubscribe');
+    const onUnsubscribe = jasmine.createSpy('onUnsubscribe');
+    const parseLiveQueryServer = new ParseLiveQueryServer(
+      {},
+      { subscriptionHandlers: { TestObject: { onSubscribe, onUnsubscribe } } }
+    );
+    const clientId = 1;
+    const parseWebSocket = { clientId };
+    addMockClient(parseLiveQueryServer, clientId, 'connection-session-token');
+    parseLiveQueryServer.getAuthForSessionToken = jasmine
+      .createSpy('getAuthForSessionToken')
+      .and.returnValue(Promise.resolve({ userId: 'subscription-user' }));
+
+    await parseLiveQueryServer._handleSubscribe(parseWebSocket, {
+      requestId: 7,
+      sessionToken: 'subscription-session-token',
+      query: { className: 'TestObject', where: {} },
+    });
+    await parseLiveQueryServer._handleUnsubscribe(parseWebSocket, { requestId: 7 });
+
+    expect(onSubscribe.calls.first().args[0].userId).toBe('subscription-user');
+    expect(onUnsubscribe.calls.first().args[0].userId).toBe('subscription-user');
+    expect(parseLiveQueryServer.getAuthForSessionToken).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels a subscription when the client disconnects during pre-registration auth', async () => {
+    const onSubscribe = jasmine.createSpy('onSubscribe');
+    const parseLiveQueryServer = new ParseLiveQueryServer(
+      {},
+      { subscriptionHandlers: { _Session: { onSubscribe } } }
+    );
+    const clientId = 1;
+    const parseWebSocket = { clientId };
+    const client = addMockClient(parseLiveQueryServer, clientId);
+    let resolveAuth;
+    parseLiveQueryServer.getAuthFromClient = jasmine
+      .createSpy('getAuthFromClient')
+      .and.callFake(
+        () =>
+          new Promise(resolve => {
+            resolveAuth = resolve;
+          })
+      );
+
+    const subscribePromise = parseLiveQueryServer._handleSubscribe(parseWebSocket, {
+      requestId: 7,
+      master: true,
+      query: { className: '_Session', where: {} },
+    });
+    await Promise.resolve();
+    const disconnectPromise = parseLiveQueryServer._handleDisconnect(
+      parseWebSocket,
+      'socket_close'
+    );
+    resolveAuth();
+    await Promise.all([subscribePromise, disconnectPromise]);
+
+    expect(onSubscribe).not.toHaveBeenCalled();
+    expect(client.pushSubscribe).not.toHaveBeenCalled();
+    expect(client.subscriptionInfos.size).toBe(0);
+    expect(parseLiveQueryServer.clients.size).toBe(0);
+    expect(parseLiveQueryServer.subscriptions.size).toBe(0);
+  });
+
+  it('orders pending subscribe lifecycle work before disconnect cleanup', async () => {
+    const events = [];
+    const legacyHandler = jasmine.createSpy('onLiveQueryEvent');
+    Parse.Cloud.onLiveQueryEvent(legacyHandler);
+    let resolveOnSubscribe;
+    let signalSubscribeStarted;
+    const subscribeStarted = new Promise(resolve => {
+      signalSubscribeStarted = resolve;
+    });
+    const onSubscribe = jasmine.createSpy('onSubscribe').and.callFake(() => {
+      events.push('subscribe');
+      signalSubscribeStarted();
+      return new Promise(resolve => {
+        resolveOnSubscribe = resolve;
+      });
+    });
+    const onUnsubscribe = jasmine.createSpy('onUnsubscribe').and.callFake(() => {
+      events.push('unsubscribe');
+    });
+    const parseLiveQueryServer = new ParseLiveQueryServer(
+      {},
+      { subscriptionHandlers: { TestObject: { onSubscribe, onUnsubscribe } } }
+    );
+    const clientId = 1;
+    const parseWebSocket = { clientId };
+    const client = addMockClient(parseLiveQueryServer, clientId);
+
+    const subscribePromise = parseLiveQueryServer._handleSubscribe(parseWebSocket, {
+      requestId: 7,
+      query: { className: 'TestObject', where: {} },
+    });
+    await subscribeStarted;
+    const disconnectPromise = parseLiveQueryServer._handleDisconnect(
+      parseWebSocket,
+      'socket_close'
+    );
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(onUnsubscribe).not.toHaveBeenCalled();
+    expect(client.pushSubscribe).not.toHaveBeenCalled();
+
+    resolveOnSubscribe();
+    await Promise.all([subscribePromise, disconnectPromise]);
+
+    expect(onSubscribe).toHaveBeenCalledTimes(1);
+    expect(onUnsubscribe).toHaveBeenCalledTimes(1);
+    expect(events).toEqual(['subscribe', 'unsubscribe']);
+    expect(client.pushSubscribe).not.toHaveBeenCalled();
+    expect(client.subscriptionInfos.size).toBe(0);
+    expect(parseLiveQueryServer.clients.size).toBe(0);
+    expect(parseLiveQueryServer.subscriptions.size).toBe(0);
+    const legacyEvents = legacyHandler.calls.allArgs().map(([event]) => event.event);
+    expect(legacyEvents).not.toContain('subscribe');
+    expect(legacyEvents).not.toContain('unsubscribe');
+  });
+
   it('replaces a subscription through the centralized removal path', async () => {
     const onSubscribe = jasmine.createSpy('onSubscribe');
     const onUnsubscribe = jasmine.createSpy('onUnsubscribe');
@@ -746,11 +867,17 @@ describe('ParseLiveQueryServer', function () {
 
   it('awaits lifecycle cleanup before graceful shutdown closes sockets', async () => {
     let resolveUnsubscribe;
+    let signalUnsubscribeStarted;
+    const unsubscribeStarted = new Promise(resolve => {
+      signalUnsubscribeStarted = resolve;
+    });
     const onUnsubscribe = jasmine.createSpy('onUnsubscribe').and.callFake(
-      () =>
-        new Promise(resolve => {
+      () => {
+        signalUnsubscribeStarted();
+        return new Promise(resolve => {
           resolveUnsubscribe = resolve;
-        })
+        });
+      }
     );
     const parseLiveQueryServer = new ParseLiveQueryServer(
       {},
@@ -768,8 +895,7 @@ describe('ParseLiveQueryServer', function () {
     parseLiveQueryServer.subscriber.isOpen = true;
 
     const shutdownPromise = parseLiveQueryServer.shutdown();
-    await Promise.resolve();
-    await Promise.resolve();
+    await unsubscribeStarted;
     expect(onUnsubscribe).toHaveBeenCalled();
     expect(parseWebSocket.ws.close).not.toHaveBeenCalled();
 
