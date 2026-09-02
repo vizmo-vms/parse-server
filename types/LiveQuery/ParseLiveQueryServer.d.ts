@@ -32,6 +32,7 @@ declare class ParseLiveQueryServer {
     _onAfterSave(message: any): Promise<void>;
     _onConnect(parseWebsocket: any): void;
     _handleDisconnect(parseWebsocket: any, reason?: SubscriptionRemovalReason): Promise<void>;
+    _isActiveClient(parseWebsocket: any, client: any): boolean;
     _matchesSubscription(parseObject: any, subscription: any): boolean;
     _clearCachedRoles(userId: string): Promise<void>;
     getAuthForSessionToken(sessionToken?: string): Promise<{
