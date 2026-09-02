@@ -131,6 +131,65 @@ describe('ParseWebSocketServer', function () {
     server.close();
   });
 
+  it('runs and awaits disconnect cleanup before terminating a missed pong', async () => {
+    let resolveCleanup;
+    const onDisconnect = jasmine.createSpy('onDisconnect').and.callFake(
+      () =>
+        new Promise(resolve => {
+          resolveCleanup = resolve;
+        })
+    );
+    const onConnectCallback = jasmine
+      .createSpy('onConnectCallback')
+      .and.callFake(parseWebSocket => parseWebSocket.setDisconnectHandler(onDisconnect));
+    const http = require('http');
+    const server = http.createServer();
+    const parseWebSocketServer = new ParseWebSocketServer(server, onConnectCallback, {
+      websocketTimeout: 5,
+    }).server;
+    const ws = new EventEmitter();
+    ws.readyState = 0;
+    ws.OPEN = 0;
+    ws.ping = jasmine.createSpy('ping');
+    ws.terminate = jasmine.createSpy('terminate');
+
+    parseWebSocketServer.onConnection(ws);
+    await new Promise(resolve => setTimeout(resolve, 25));
+
+    expect(onDisconnect).toHaveBeenCalledWith('pong_timeout');
+    expect(ws.terminate).not.toHaveBeenCalled();
+
+    resolveCleanup();
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    expect(ws.terminate).toHaveBeenCalled();
+    server.close();
+  });
+
+  it('runs disconnect cleanup on a socket error', async () => {
+    const onDisconnect = jasmine.createSpy('onDisconnect');
+    const onConnectCallback = jasmine
+      .createSpy('onConnectCallback')
+      .and.callFake(parseWebSocket => parseWebSocket.setDisconnectHandler(onDisconnect));
+    const http = require('http');
+    const server = http.createServer();
+    const parseWebSocketServer = new ParseWebSocketServer(server, onConnectCallback, {
+      websocketTimeout: 100,
+    }).server;
+    const ws = new EventEmitter();
+    ws.readyState = 0;
+    ws.OPEN = 0;
+    ws.ping = jasmine.createSpy('ping');
+    ws.terminate = jasmine.createSpy('terminate');
+
+    parseWebSocketServer.onConnection(ws);
+    ws.emit('error', new Error('socket failed'));
+    await Promise.resolve();
+
+    expect(onDisconnect).toHaveBeenCalledWith('socket_error');
+    server.close();
+  });
+
   afterEach(function () {
     jasmine.restoreLibrary('ws', 'Server');
   });

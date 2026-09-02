@@ -15,24 +15,31 @@ export class ParseWebSocketServer {
     };
     wss.onConnection = ws => {
       ws.waitingForPong = false;
+      const parseWebSocket = new ParseWebSocket(ws);
       ws.on('pong', () => {
         ws.waitingForPong = false;
       });
       ws.on('error', error => {
         logger.error(error.message);
         logger.error(inspect(ws, false));
+        void parseWebSocket.disconnect('socket_error');
       });
-      onConnect(new ParseWebSocket(ws));
+      onConnect(parseWebSocket);
       // Send ping to client periodically
-      const pingIntervalId = setInterval(() => {
+      const pingIntervalId = setInterval(async () => {
         if (!ws.waitingForPong) {
           ws.ping();
           ws.waitingForPong = true;
         } else {
           clearInterval(pingIntervalId);
-          ws.terminate();
+          try {
+            await parseWebSocket.disconnect('pong_timeout');
+          } finally {
+            ws.terminate();
+          }
         }
       }, config.websocketTimeout || 10 * 1000);
+      parseWebSocket.on('disconnecting', () => clearInterval(pingIntervalId));
     };
     wss.onError = error => {
       logger.error(error);
@@ -50,13 +57,32 @@ export class ParseWebSocketServer {
 
 export class ParseWebSocket extends events.EventEmitter {
   ws: any;
+  disconnectHandler: Function;
+  disconnectPromise: Promise<void>;
 
   constructor(ws: any) {
     super();
     ws.onmessage = request =>
       this.emit('message', request && request.data ? request.data : request);
-    ws.onclose = () => this.emit('disconnect');
+    ws.onclose = () => {
+      void this.disconnect('socket_close');
+    };
     this.ws = ws;
+  }
+
+  setDisconnectHandler(disconnectHandler: Function): void {
+    this.disconnectHandler = disconnectHandler;
+  }
+
+  disconnect(reason: string): Promise<void> {
+    if (this.disconnectPromise) {
+      return this.disconnectPromise;
+    }
+    this.emit('disconnecting', reason);
+    this.disconnectPromise = Promise.resolve()
+      .then(() => this.disconnectHandler?.(reason))
+      .catch(error => logger.error('Failed running LiveQuery socket cleanup', error));
+    return this.disconnectPromise;
   }
 
   send(message: any): void {

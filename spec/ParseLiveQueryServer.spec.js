@@ -38,9 +38,13 @@ describe('ParseLiveQueryServer', function () {
     mockClient.pushError = jasmine.createSpy('pushError');
     jasmine.mockLibrary('../lib/LiveQuery/Client', 'Client', mockClient);
     // Mock Subscription
-    const mockSubscriotion = function () {
+    const mockSubscriotion = function (className, query, hash) {
+      this.className = className;
+      this.query = query;
+      this.hash = hash;
       this.addClientSubscription = jasmine.createSpy('addClientSubscription');
       this.deleteClientSubscription = jasmine.createSpy('deleteClientSubscription');
+      this.hasSubscribingClient = jasmine.createSpy('hasSubscribingClient').and.returnValue(false);
     };
     jasmine.mockLibrary('../lib/LiveQuery/Subscription', 'Subscription', mockSubscriotion);
     // Mock queryHash
@@ -478,6 +482,304 @@ describe('ParseLiveQueryServer', function () {
     expect(args[1].keys).toBe(queryAgain.keys);
   });
 
+  it('runs only the subscribed class lifecycle handler with the effective user identity', async () => {
+    const onSubscribe = jasmine.createSpy('onSubscribe');
+    const otherOnSubscribe = jasmine.createSpy('otherOnSubscribe');
+    const parseLiveQueryServer = new ParseLiveQueryServer(
+      {},
+      {
+        subscriptionHandlers: {
+          TestObject: { onSubscribe },
+          Other: { onSubscribe: otherOnSubscribe },
+        },
+      }
+    );
+    const clientId = 1;
+    const client = addMockClient(
+      parseLiveQueryServer,
+      clientId,
+      'connection-session-token',
+      'installation-id'
+    );
+    parseLiveQueryServer.getAuthForSessionToken = jasmine
+      .createSpy('getAuthForSessionToken')
+      .and.callFake(sessionToken =>
+        Promise.resolve({
+          userId:
+            sessionToken === 'subscription-session-token' ? 'subscription-user' : 'connection-user',
+        })
+      );
+
+    await parseLiveQueryServer._handleSubscribe(
+      { clientId },
+      {
+        requestId: 7,
+        sessionToken: 'subscription-session-token',
+        query: { className: 'TestObject', where: { state: 'open' } },
+      }
+    );
+
+    expect(onSubscribe).toHaveBeenCalledTimes(1);
+    expect(otherOnSubscribe).not.toHaveBeenCalled();
+    const event = onSubscribe.calls.first().args[0];
+    expect(event).toEqual({
+      event: 'subscribe',
+      className: 'TestObject',
+      clientId,
+      requestId: 7,
+      query: { where: { state: 'open' } },
+      userId: 'subscription-user',
+      installationId: 'installation-id',
+      useMasterKey: false,
+    });
+    expect(JSON.stringify(event)).not.toContain('session-token');
+    expect(event.sessionToken).toBeUndefined();
+    expect(parseLiveQueryServer.getAuthForSessionToken).toHaveBeenCalledWith(
+      'subscription-session-token'
+    );
+    expect(client.pushSubscribe).toHaveBeenCalledWith(7);
+  });
+
+  it('does not log session tokens from malformed requests', function () {
+    const logger = require('../lib/logger').default;
+    const errorSpy = spyOn(logger, 'error');
+    const parseLiveQueryServer = new ParseLiveQueryServer({});
+    const EventEmitter = require('events');
+    const parseWebSocket = new EventEmitter();
+    parseLiveQueryServer._onConnect(parseWebSocket);
+
+    parseWebSocket.emit('message', '{"sessionToken":"sensitive-session-token"');
+
+    expect(errorSpy).toHaveBeenCalled();
+    expect(JSON.stringify(errorSpy.calls.allArgs())).not.toContain('sensitive-session-token');
+  });
+
+  it('rolls back a subscription when its lifecycle handler rejects', async () => {
+    const onSubscribe = jasmine
+      .createSpy('onSubscribe')
+      .and.returnValue(Promise.reject(new Error('handler failed')));
+    const onUnsubscribe = jasmine.createSpy('onUnsubscribe');
+    const parseLiveQueryServer = new ParseLiveQueryServer(
+      {},
+      { subscriptionHandlers: { TestObject: { onSubscribe, onUnsubscribe } } }
+    );
+    const clientId = 1;
+    const client = addMockClient(parseLiveQueryServer, clientId);
+
+    await parseLiveQueryServer._handleSubscribe(
+      { clientId },
+      {
+        requestId: 7,
+        query: { className: 'TestObject', where: {} },
+      }
+    );
+
+    expect(onSubscribe).toHaveBeenCalledTimes(1);
+    expect(onUnsubscribe).not.toHaveBeenCalled();
+    expect(client.getSubscriptionInfo(7)).toBeUndefined();
+    expect(parseLiveQueryServer.subscriptions.size).toBe(0);
+    expect(client.pushSubscribe).not.toHaveBeenCalled();
+    const Client = require('../lib/LiveQuery/Client').Client;
+    expect(Client.pushError).toHaveBeenCalled();
+  });
+
+  it('removes only the requested subscription and reports the client unsubscribe reason', async () => {
+    const onUnsubscribe = jasmine.createSpy('onUnsubscribe');
+    const parseLiveQueryServer = new ParseLiveQueryServer(
+      {},
+      { subscriptionHandlers: { TestObject: { onUnsubscribe } } }
+    );
+    const clientId = 1;
+    const client = addMockClient(parseLiveQueryServer, clientId, undefined, 'installation-id');
+    const parseWebSocket = { clientId };
+    await parseLiveQueryServer._handleSubscribe(parseWebSocket, {
+      requestId: 1,
+      query: { className: 'TestObject', where: { status: 'one' } },
+    });
+    await parseLiveQueryServer._handleSubscribe(parseWebSocket, {
+      requestId: 2,
+      query: { className: 'TestObject', where: { status: 'two' } },
+    });
+
+    await parseLiveQueryServer._handleUnsubscribe(parseWebSocket, { requestId: 1 });
+
+    expect(client.getSubscriptionInfo(1)).toBeUndefined();
+    expect(client.getSubscriptionInfo(2)).toBeDefined();
+    expect(onUnsubscribe).toHaveBeenCalledWith({
+      event: 'unsubscribe',
+      className: 'TestObject',
+      clientId,
+      requestId: 1,
+      installationId: 'installation-id',
+      useMasterKey: false,
+      reason: 'client_unsubscribe',
+    });
+    expect(client.pushUnsubscribe).toHaveBeenCalledWith(1);
+  });
+
+  it('continues to forward subscribe and unsubscribe events to Cloud Code', async () => {
+    const handler = jasmine.createSpy('onLiveQueryEvent');
+    Parse.Cloud.onLiveQueryEvent(handler);
+    const parseLiveQueryServer = new ParseLiveQueryServer({});
+    const clientId = 1;
+    const parseWebSocket = { clientId };
+    addMockClient(parseLiveQueryServer, clientId);
+
+    await parseLiveQueryServer._handleSubscribe(parseWebSocket, {
+      requestId: 1,
+      query: { className: 'TestObject', where: {} },
+    });
+    await parseLiveQueryServer._handleUnsubscribe(parseWebSocket, { requestId: 1 });
+
+    expect(handler.calls.allArgs().map(([event]) => event.event)).toEqual([
+      'subscribe',
+      'unsubscribe',
+    ]);
+  });
+
+  it('falls back to the connection token when the subscription token has no user', async () => {
+    const onSubscribe = jasmine.createSpy('onSubscribe');
+    const parseLiveQueryServer = new ParseLiveQueryServer(
+      {},
+      { subscriptionHandlers: { TestObject: { onSubscribe } } }
+    );
+    const clientId = 1;
+    addMockClient(parseLiveQueryServer, clientId, 'connection-session-token');
+    parseLiveQueryServer.getAuthForSessionToken = jasmine
+      .createSpy('getAuthForSessionToken')
+      .and.callFake(sessionToken =>
+        Promise.resolve(sessionToken === 'connection-session-token' ? { userId: 'connection-user' } : {})
+      );
+
+    await parseLiveQueryServer._handleSubscribe(
+      { clientId },
+      {
+        requestId: 7,
+        sessionToken: 'unresolved-subscription-token',
+        query: { className: 'TestObject', where: {} },
+      }
+    );
+
+    expect(onSubscribe.calls.first().args[0].userId).toBe('connection-user');
+    expect(parseLiveQueryServer.getAuthForSessionToken.calls.allArgs()).toEqual([
+      ['unresolved-subscription-token'],
+      ['connection-session-token'],
+    ]);
+  });
+
+  it('replaces a subscription through the centralized removal path', async () => {
+    const onSubscribe = jasmine.createSpy('onSubscribe');
+    const onUnsubscribe = jasmine.createSpy('onUnsubscribe');
+    const parseLiveQueryServer = new ParseLiveQueryServer(
+      {},
+      { subscriptionHandlers: { TestObject: { onSubscribe, onUnsubscribe } } }
+    );
+    const clientId = 1;
+    const client = addMockClient(parseLiveQueryServer, clientId);
+    const parseWebSocket = { clientId };
+    await parseLiveQueryServer._handleSubscribe(parseWebSocket, {
+      requestId: 1,
+      query: { className: 'TestObject', where: { version: 1 } },
+    });
+
+    await parseLiveQueryServer._handleUpdateSubscription(parseWebSocket, {
+      requestId: 1,
+      query: { className: 'TestObject', where: { version: 2 } },
+    });
+
+    expect(onUnsubscribe).toHaveBeenCalledWith({
+      event: 'unsubscribe',
+      className: 'TestObject',
+      clientId,
+      requestId: 1,
+      useMasterKey: false,
+      reason: 'query_update',
+    });
+    expect(onSubscribe.calls.mostRecent().args[0].query).toEqual({ where: { version: 2 } });
+    expect(client.pushUnsubscribe).not.toHaveBeenCalled();
+  });
+
+  it('cleans up every subscription once for close, error, and pong timeout', async () => {
+    const onUnsubscribe = jasmine.createSpy('onUnsubscribe');
+    const parseLiveQueryServer = new ParseLiveQueryServer(
+      {},
+      { subscriptionHandlers: { TestObject: { onUnsubscribe } } }
+    );
+    const firstSocket = { clientId: 1 };
+    const secondSocket = { clientId: 2 };
+    const thirdSocket = { clientId: 3 };
+    addMockClient(parseLiveQueryServer, 1);
+    addMockClient(parseLiveQueryServer, 2);
+    addMockClient(parseLiveQueryServer, 3);
+    await parseLiveQueryServer._handleSubscribe(firstSocket, {
+      requestId: 1,
+      query: { className: 'TestObject', where: { client: 1 } },
+    });
+    await parseLiveQueryServer._handleSubscribe(firstSocket, {
+      requestId: 2,
+      query: { className: 'TestObject', where: { client: 1, second: true } },
+    });
+    await parseLiveQueryServer._handleSubscribe(secondSocket, {
+      requestId: 3,
+      query: { className: 'TestObject', where: { client: 2 } },
+    });
+    await parseLiveQueryServer._handleSubscribe(thirdSocket, {
+      requestId: 4,
+      query: { className: 'TestObject', where: { client: 3 } },
+    });
+
+    await parseLiveQueryServer._handleDisconnect(firstSocket, 'socket_close');
+    await parseLiveQueryServer._handleDisconnect(firstSocket, 'socket_close');
+    await parseLiveQueryServer._handleDisconnect(secondSocket, 'socket_error');
+    await parseLiveQueryServer._handleDisconnect(thirdSocket, 'pong_timeout');
+
+    expect(onUnsubscribe.calls.count()).toBe(4);
+    expect(onUnsubscribe.calls.allArgs().map(([event]) => event.reason)).toEqual([
+      'socket_close',
+      'socket_close',
+      'socket_error',
+      'pong_timeout',
+    ]);
+    expect(parseLiveQueryServer.clients.size).toBe(0);
+    expect(parseLiveQueryServer.subscriptions.size).toBe(0);
+  });
+
+  it('awaits lifecycle cleanup before graceful shutdown closes sockets', async () => {
+    let resolveUnsubscribe;
+    const onUnsubscribe = jasmine.createSpy('onUnsubscribe').and.callFake(
+      () =>
+        new Promise(resolve => {
+          resolveUnsubscribe = resolve;
+        })
+    );
+    const parseLiveQueryServer = new ParseLiveQueryServer(
+      {},
+      { subscriptionHandlers: { TestObject: { onUnsubscribe } } }
+    );
+    const parseWebSocket = {
+      clientId: 1,
+      ws: { close: jasmine.createSpy('close') },
+    };
+    addMockClient(parseLiveQueryServer, 1, undefined, undefined, parseWebSocket);
+    await parseLiveQueryServer._handleSubscribe(parseWebSocket, {
+      requestId: 1,
+      query: { className: 'TestObject', where: {} },
+    });
+    parseLiveQueryServer.subscriber.isOpen = true;
+
+    const shutdownPromise = parseLiveQueryServer.shutdown();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onUnsubscribe).toHaveBeenCalled();
+    expect(parseWebSocket.ws.close).not.toHaveBeenCalled();
+
+    resolveUnsubscribe();
+    await shutdownPromise;
+
+    expect(onUnsubscribe.calls.first().args[0].reason).toBe('server_shutdown');
+    expect(parseWebSocket.ws.close).toHaveBeenCalled();
+  });
+
   it('can handle unsubscribe command without clientId', function () {
     const parseLiveQueryServer = new ParseLiveQueryServer({});
     const incompleteParseConn = {};
@@ -619,7 +921,7 @@ describe('ParseLiveQueryServer', function () {
     expect(JSON.stringify(args[1])).toBe(unsubscribeRequest);
   });
 
-  it('can set update command message handler for a parseWebSocket', function () {
+  it('can set update command message handler for a parseWebSocket', async function () {
     const parseLiveQueryServer = new ParseLiveQueryServer({});
     // Register mock connect/subscribe/unsubscribe handler for the server
     spyOn(parseLiveQueryServer, '_handleUpdateSubscription').and.callThrough();
@@ -641,14 +943,17 @@ describe('ParseLiveQueryServer', function () {
     });
     // Trigger message event
     parseWebSocket.emit('message', updateRequest);
+    await Promise.resolve();
+    await Promise.resolve();
     // Make sure _handleUnsubscribe is called
     const args = parseLiveQueryServer._handleUpdateSubscription.calls.mostRecent().args;
     expect(args[0]).toBe(parseWebSocket);
     expect(JSON.stringify(args[1])).toBe(updateRequest);
     expect(parseLiveQueryServer._handleUnsubscribe).toHaveBeenCalled();
     const unsubArgs = parseLiveQueryServer._handleUnsubscribe.calls.mostRecent().args;
-    expect(unsubArgs.length).toBe(3);
+    expect(unsubArgs.length).toBe(4);
     expect(unsubArgs[2]).toBe(false);
+    expect(unsubArgs[3]).toBe('query_update');
     expect(parseLiveQueryServer._handleSubscribe).toHaveBeenCalled();
   });
 
@@ -1914,9 +2219,20 @@ describe('ParseLiveQueryServer', function () {
   });
 
   // Helper functions to add mock client and subscription to a liveQueryServer
-  function addMockClient(parseLiveQueryServer, clientId) {
+  function addMockClient(parseLiveQueryServer, clientId, sessionToken, installationId, parseWebSocket) {
     const Client = require('../lib/LiveQuery/Client').Client;
-    const client = new Client(clientId, {});
+    const clientSocket = parseWebSocket || {};
+    const client = new Client(clientId, clientSocket, false);
+    client.id = clientId;
+    client.parseWebSocket = clientSocket;
+    client.sessionToken = sessionToken;
+    client.installationId = installationId;
+    client.subscriptionInfos = new Map();
+    client.addSubscriptionInfo.and.callFake((requestId, subscriptionInfo) =>
+      client.subscriptionInfos.set(requestId, subscriptionInfo)
+    );
+    client.getSubscriptionInfo.and.callFake(requestId => client.subscriptionInfos.get(requestId));
+    client.deleteSubscriptionInfo.and.callFake(requestId => client.subscriptionInfos.delete(requestId));
     parseLiveQueryServer.clients.set(clientId, client);
     return client;
   }

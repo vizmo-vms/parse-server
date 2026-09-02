@@ -624,6 +624,31 @@ export interface LiveQueryOptions {
   wssAdapter: ?Adapter<WSSAdapter>;
 }
 
+export type LiveQuerySubscriptionEvent = {
+  event: 'subscribe' | 'unsubscribe',
+  className: string,
+  clientId: string,
+  requestId: number,
+  installationId?: string,
+  query?: { where: any },
+  reason?:
+    | 'client_unsubscribe'
+    | 'query_update'
+    | 'socket_close'
+    | 'socket_error'
+    | 'pong_timeout'
+    | 'server_shutdown',
+  useMasterKey: boolean,
+  userId?: string,
+};
+
+export type LiveQuerySubscriptionHandlers = {
+  [className: string]: {
+    onSubscribe?: (event: LiveQuerySubscriptionEvent) => void | Promise<void>,
+    onUnsubscribe?: (event: LiveQuerySubscriptionEvent) => void | Promise<void>,
+  },
+};
+
 export interface LiveQueryServerOptions {
   /* This string should match the appId in use by your Parse Server. If you deploy the LiveQuery server alongside Parse Server, the LiveQuery server will try to use the same appId.*/
   appId: ?string;
@@ -650,6 +675,8 @@ export interface LiveQueryServerOptions {
   pubSubAdapter: ?Adapter<PubSubAdapter>;
   /* Adapter module for the WebSocketServer */
   wssAdapter: ?Adapter<WSSAdapter>;
+  /* Class-scoped handlers for LiveQuery subscription lifecycle events. */
+  subscriptionHandlers: ?LiveQuerySubscriptionHandlers;
 }
 
 export interface IdempotencyOptions {
