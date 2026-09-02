@@ -201,6 +201,7 @@
  * @property {Any} redisOptions parse-server's LiveQuery redisOptions
  * @property {String} redisURL parse-server's LiveQuery redisURL
  * @property {String} serverURL This string should match the serverURL in use by your Parse Server. If you deploy the LiveQuery server alongside Parse Server, the LiveQuery server will try to use the same serverURL.
+ * @property {Object} subscriptionHandlers Class-scoped handlers for LiveQuery subscription lifecycle events. Each class may provide async `onSubscribe` and `onUnsubscribe` handlers. Events include subscription identity and metadata, but never a session token.
  * @property {Number} websocketTimeout Number of milliseconds between ping/pong frames. The WebSocket server sends ping/pong frames to the clients to keep the WebSocket alive. This value defines the interval of the ping/pong frame from the server to clients, defaults to 10 * 1000 ms (10 s).
  * @property {Adapter<WSSAdapter>} wssAdapter Adapter module for the WebSocketServer
  */

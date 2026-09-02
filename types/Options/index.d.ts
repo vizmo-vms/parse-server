@@ -186,6 +186,25 @@ export interface LiveQueryOptions {
     pubSubAdapter?: Adapter<PubSubAdapter>;
     wssAdapter?: Adapter<WSSAdapter>;
 }
+export type LiveQuerySubscriptionEvent = {
+    event: 'subscribe' | 'unsubscribe';
+    className: string;
+    clientId: string;
+    requestId: number;
+    installationId?: string;
+    query?: {
+        where: any;
+    };
+    reason?: 'client_unsubscribe' | 'query_update' | 'socket_close' | 'socket_error' | 'pong_timeout' | 'server_shutdown';
+    useMasterKey: boolean;
+    userId?: string;
+};
+export type LiveQuerySubscriptionHandlers = {
+    [className: string]: {
+        onSubscribe?: (event: LiveQuerySubscriptionEvent) => void | Promise<void>;
+        onUnsubscribe?: (event: LiveQuerySubscriptionEvent) => void | Promise<void>;
+    };
+};
 export interface LiveQueryServerOptions {
     appId?: string;
     masterKey?: string;
@@ -199,6 +218,7 @@ export interface LiveQueryServerOptions {
     redisURL?: string;
     pubSubAdapter?: Adapter<PubSubAdapter>;
     wssAdapter?: Adapter<WSSAdapter>;
+    subscriptionHandlers?: LiveQuerySubscriptionHandlers;
 }
 export interface IdempotencyOptions {
     paths?: (string[]);

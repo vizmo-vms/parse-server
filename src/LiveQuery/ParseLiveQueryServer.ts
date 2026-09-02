@@ -26,6 +26,27 @@ import DatabaseController from '../Controllers/DatabaseController';
 import { isDeepStrictEqual } from 'util';
 import deepcopy from 'deepcopy';
 
+type SubscriptionRemovalReason =
+  | 'client_unsubscribe'
+  | 'query_update'
+  | 'socket_close'
+  | 'socket_error'
+  | 'pong_timeout'
+  | 'server_shutdown'
+  | 'subscribe_rollback';
+
+type SubscriptionLifecycleEvent = {
+  event: 'subscribe' | 'unsubscribe',
+  className: string,
+  clientId: string,
+  requestId: number,
+  installationId?: string,
+  query?: { where: any },
+  reason?: SubscriptionRemovalReason,
+  useMasterKey: boolean,
+  userId?: string,
+};
+
 class ParseLiveQueryServer {
   server: any;
   config: any;
@@ -99,10 +120,16 @@ class ParseLiveQueryServer {
   }
 
   async shutdown() {
+    const clients = Array.from(this.clients.values());
+    await Promise.all(
+      clients.map(client => this._handleDisconnect(client.parseWebSocket, 'server_shutdown'))
+    );
+    await Promise.all([
+      ...clients.map(client => client.parseWebSocket?.ws?.close?.()),
+      this.parseWebSocketServer.close?.(),
+    ]);
     if (this.subscriber.isOpen) {
       await Promise.all([
-        ...[...this.clients.values()].map(client => client.parseWebSocket.ws.close()),
-        this.parseWebSocketServer.close?.(),
         ...Array.from(this.subscriber.subscriptions?.keys() || []).map(key =>
           this.subscriber.unsubscribe(key)
         ),
@@ -255,7 +282,7 @@ class ParseLiveQueryServer {
             const error = resolveError(e);
             Client.pushError(client.parseWebSocket, error.code, error.message, false, requestId);
             logger.error(
-              `Failed running afterLiveQueryEvent on class ${className} for event ${res.event} with session ${res.sessionToken} with:\n Error: ` +
+              `Failed running afterLiveQueryEvent on class ${className} for event ${res.event} with:\n Error: ` +
                 JSON.stringify(error)
             );
           }
@@ -416,7 +443,7 @@ class ParseLiveQueryServer {
             const error = resolveError(e);
             Client.pushError(client.parseWebSocket, error.code, error.message, false, requestId);
             logger.error(
-              `Failed running afterLiveQueryEvent on class ${className} for event ${res.event} with session ${res.sessionToken} with:\n Error: ` +
+              `Failed running afterLiveQueryEvent on class ${className} for event ${res.event} with:\n Error: ` +
                 JSON.stringify(error)
             );
           }
@@ -431,11 +458,13 @@ class ParseLiveQueryServer {
         try {
           request = JSON.parse(request);
         } catch (e) {
-          logger.error('unable to parse request', request, e);
+          logger.error('unable to parse request', e);
           return;
         }
       }
-      logger.verbose('Request: %j', request);
+      const requestForLogging = { ...request };
+      delete requestForLogging.sessionToken;
+      logger.verbose('Request: %j', requestForLogging);
 
       // Check whether this request is a valid request, return error directly if not
       if (
@@ -466,7 +495,29 @@ class ParseLiveQueryServer {
       }
     });
 
-    parseWebsocket.on('disconnect', () => {
+    if (typeof parseWebsocket.setDisconnectHandler === 'function') {
+      parseWebsocket.setDisconnectHandler(reason => this._handleDisconnect(parseWebsocket, reason));
+    } else {
+      parseWebsocket.on('disconnect', reason => {
+        void this._handleDisconnect(parseWebsocket, reason || 'socket_close');
+      });
+    }
+
+    runLiveQueryEventHandlers({
+      event: 'ws_connect',
+      clients: this.clients.size,
+      subscriptions: this.subscriptions.size,
+    });
+  }
+
+  async _handleDisconnect(
+    parseWebsocket: any,
+    reason: SubscriptionRemovalReason = 'socket_close'
+  ): Promise<void> {
+    if (parseWebsocket._liveQueryDisconnectPromise) {
+      return parseWebsocket._liveQueryDisconnectPromise;
+    }
+    parseWebsocket._liveQueryDisconnectPromise = (async () => {
       logger.info(`Client disconnect: ${parseWebsocket.clientId}`);
       const clientId = parseWebsocket.clientId;
       if (!this.clients.has(clientId)) {
@@ -480,25 +531,13 @@ class ParseLiveQueryServer {
         return;
       }
 
-      // Delete client
       const client = this.clients.get(clientId);
       this.clients.delete(clientId);
-
-      // Delete client from subscriptions
-      for (const [requestId, subscriptionInfo] of _.entries(client.subscriptionInfos)) {
-        const subscription = subscriptionInfo.subscription;
-        subscription.deleteClientSubscription(clientId, requestId);
-
-        // If there is no client which is subscribing this subscription, remove it from subscriptions
-        const classSubscriptions = this.subscriptions.get(subscription.className);
-        if (!subscription.hasSubscribingClient()) {
-          classSubscriptions.delete(subscription.hash);
-        }
-        // If there is no subscriptions under this class, remove it from subscriptions
-        if (classSubscriptions.size === 0) {
-          this.subscriptions.delete(subscription.className);
-        }
-      }
+      await Promise.all(
+        Array.from(client.subscriptionInfos.keys() as Iterable<number>).map(requestId =>
+          this._removeSubscription(client, clientId, requestId, reason)
+        )
+      );
 
       logger.verbose('Current clients %d', this.clients.size);
       logger.verbose('Current subscriptions %d', this.subscriptions.size);
@@ -510,13 +549,8 @@ class ParseLiveQueryServer {
         installationId: client.installationId,
         sessionToken: client.sessionToken,
       });
-    });
-
-    runLiveQueryEventHandlers({
-      event: 'ws_connect',
-      clients: this.clients.size,
-      subscriptions: this.subscriptions.size,
-    });
+    })();
+    return parseWebsocket._liveQueryDisconnectPromise;
   }
 
   _matchesSubscription(parseObject: any, subscription: any): boolean {
@@ -820,8 +854,7 @@ class ParseLiveQueryServer {
       const error = resolveError(e);
       Client.pushError(parseWebsocket, error.code, error.message, false);
       logger.error(
-        `Failed running beforeConnect for session ${request.sessionToken} with:\n Error: ` +
-          JSON.stringify(error)
+        'Failed running beforeConnect with:\n Error: ' + JSON.stringify(error)
       );
     }
   }
@@ -849,6 +882,142 @@ class ParseLiveQueryServer {
       break;
     }
     return isValid;
+  }
+
+  async _getSubscriptionLifecycleUserId(client: any, subscriptionInfo: any): Promise<string | void> {
+    const sessionTokens = [subscriptionInfo.sessionToken, client.sessionToken];
+    const attemptedTokens = new Set();
+    for (const sessionToken of sessionTokens) {
+      if (!sessionToken || attemptedTokens.has(sessionToken)) {
+        continue;
+      }
+      attemptedTokens.add(sessionToken);
+      try {
+        const { userId } = await this.getAuthForSessionToken(sessionToken);
+        if (userId) {
+          return userId;
+        }
+      } catch (error) {
+        logger.verbose('Could not resolve subscription lifecycle user identity');
+      }
+    }
+  }
+
+  async _getSubscriptionLifecycleEvent(
+    event: 'subscribe' | 'unsubscribe',
+    client: any,
+    clientId: string,
+    requestId: number,
+    subscriptionInfo: any,
+    reason?: SubscriptionRemovalReason
+  ): Promise<SubscriptionLifecycleEvent> {
+    const lifecycleEvent: SubscriptionLifecycleEvent = {
+      event,
+      className: subscriptionInfo.subscription.className,
+      clientId,
+      requestId,
+      useMasterKey: client.hasMasterKey,
+    };
+    if (client.installationId) {
+      lifecycleEvent.installationId = client.installationId;
+    }
+    if (event === 'subscribe') {
+      lifecycleEvent.query = { where: deepcopy(subscriptionInfo.subscription.query || {}) };
+    }
+    if (reason) {
+      lifecycleEvent.reason = reason;
+    }
+    const userId = await this._getSubscriptionLifecycleUserId(client, subscriptionInfo);
+    if (userId) {
+      lifecycleEvent.userId = userId;
+    }
+    return lifecycleEvent;
+  }
+
+  async _runSubscriptionHandler(
+    event: 'subscribe' | 'unsubscribe',
+    client: any,
+    clientId: string,
+    requestId: number,
+    subscriptionInfo: any,
+    reason?: SubscriptionRemovalReason
+  ): Promise<void> {
+    const handlerName = event === 'subscribe' ? 'onSubscribe' : 'onUnsubscribe';
+    const handler = this.config.subscriptionHandlers?.[subscriptionInfo.subscription.className]?.[
+      handlerName
+    ];
+    if (typeof handler !== 'function') {
+      return;
+    }
+    await handler(
+      await this._getSubscriptionLifecycleEvent(
+        event,
+        client,
+        clientId,
+        requestId,
+        subscriptionInfo,
+        reason
+      )
+    );
+  }
+
+  async _removeSubscription(
+    client: any,
+    clientId: string,
+    requestId: number,
+    reason: SubscriptionRemovalReason,
+    notifyClient: boolean = false,
+    emitEvents: boolean = true
+  ): Promise<boolean> {
+    const subscriptionInfo = client.getSubscriptionInfo(requestId);
+    if (typeof subscriptionInfo === 'undefined' || subscriptionInfo.ended) {
+      return false;
+    }
+    subscriptionInfo.ended = true;
+    client.deleteSubscriptionInfo(requestId);
+
+    const subscription = subscriptionInfo.subscription;
+    const className = subscription.className;
+    subscription.deleteClientSubscription(clientId, requestId);
+    const classSubscriptions = this.subscriptions.get(className);
+    if (classSubscriptions) {
+      if (!subscription.hasSubscribingClient()) {
+        classSubscriptions.delete(subscription.hash);
+      }
+      if (classSubscriptions.size === 0) {
+        this.subscriptions.delete(className);
+      }
+    }
+
+    if (emitEvents) {
+      try {
+        await this._runSubscriptionHandler(
+          'unsubscribe',
+          client,
+          clientId,
+          requestId,
+          subscriptionInfo,
+          reason
+        );
+      } catch (error) {
+        logger.error(`Failed running subscription onUnsubscribe handler for ${className}`);
+      }
+      runLiveQueryEventHandlers({
+        client,
+        event: 'unsubscribe',
+        clients: this.clients.size,
+        subscriptions: this.subscriptions.size,
+        sessionToken: subscriptionInfo.sessionToken,
+        useMasterKey: client.hasMasterKey,
+        installationId: client.installationId,
+      });
+    }
+
+    if (notifyClient) {
+      client.pushUnsubscribe(requestId);
+      logger.verbose(`Delete client: ${clientId} | subscription: ${requestId}`);
+    }
+    return true;
   }
 
   async _handleSubscribe(parseWebsocket: any, request: any): Promise<any> {
@@ -944,6 +1113,26 @@ class ParseLiveQueryServer {
       // Add clientId to subscription
       subscription.addClientSubscription(parseWebsocket.clientId, request.requestId);
 
+      try {
+        await this._runSubscriptionHandler(
+          'subscribe',
+          client,
+          parseWebsocket.clientId,
+          request.requestId,
+          subscriptionInfo
+        );
+      } catch (error) {
+        await this._removeSubscription(
+          client,
+          parseWebsocket.clientId,
+          request.requestId,
+          'subscribe_rollback',
+          false,
+          false
+        );
+        throw error;
+      }
+
       client.pushSubscribe(request.requestId);
 
       logger.verbose(
@@ -963,18 +1152,22 @@ class ParseLiveQueryServer {
       const error = resolveError(e);
       Client.pushError(parseWebsocket, error.code, error.message, false, request.requestId);
       logger.error(
-        `Failed running beforeSubscribe on ${className} for session ${request.sessionToken} with:\n Error: ` +
-          JSON.stringify(error)
+        `Failed running beforeSubscribe on ${className} with:\n Error: ` + JSON.stringify(error)
       );
     }
   }
 
-  _handleUpdateSubscription(parseWebsocket: any, request: any): any {
-    this._handleUnsubscribe(parseWebsocket, request, false);
-    this._handleSubscribe(parseWebsocket, request);
+  async _handleUpdateSubscription(parseWebsocket: any, request: any): Promise<any> {
+    await this._handleUnsubscribe(parseWebsocket, request, false, 'query_update');
+    return this._handleSubscribe(parseWebsocket, request);
   }
 
-  _handleUnsubscribe(parseWebsocket: any, request: any, notifyClient: boolean = true): any {
+  async _handleUnsubscribe(
+    parseWebsocket: any,
+    request: any,
+    notifyClient: boolean = true,
+    reason: SubscriptionRemovalReason = 'client_unsubscribe'
+  ): Promise<any> {
     // If we can not find this client, return error to client
     if (!Object.prototype.hasOwnProperty.call(parseWebsocket, 'clientId')) {
       Client.pushError(
@@ -1001,8 +1194,7 @@ class ParseLiveQueryServer {
       return;
     }
 
-    const subscriptionInfo = client.getSubscriptionInfo(requestId);
-    if (typeof subscriptionInfo === 'undefined') {
+    if (typeof client.getSubscriptionInfo(requestId) === 'undefined') {
       Client.pushError(
         parseWebsocket,
         2,
@@ -1021,40 +1213,7 @@ class ParseLiveQueryServer {
       return;
     }
 
-    // Remove subscription from client
-    client.deleteSubscriptionInfo(requestId);
-    // Remove client from subscription
-    const subscription = subscriptionInfo.subscription;
-    const className = subscription.className;
-    subscription.deleteClientSubscription(parseWebsocket.clientId, requestId);
-    // If there is no client which is subscribing this subscription, remove it from subscriptions
-    const classSubscriptions = this.subscriptions.get(className);
-    if (!subscription.hasSubscribingClient()) {
-      classSubscriptions.delete(subscription.hash);
-    }
-    // If there is no subscriptions under this class, remove it from subscriptions
-    if (classSubscriptions.size === 0) {
-      this.subscriptions.delete(className);
-    }
-    runLiveQueryEventHandlers({
-      client,
-      event: 'unsubscribe',
-      clients: this.clients.size,
-      subscriptions: this.subscriptions.size,
-      sessionToken: subscriptionInfo.sessionToken,
-      useMasterKey: client.hasMasterKey,
-      installationId: client.installationId,
-    });
-
-    if (!notifyClient) {
-      return;
-    }
-
-    client.pushUnsubscribe(request.requestId);
-
-    logger.verbose(
-      `Delete client: ${parseWebsocket.clientId} | subscription: ${request.requestId}`
-    );
+    return this._removeSubscription(client, parseWebsocket.clientId, requestId, reason, notifyClient);
   }
 }
 
