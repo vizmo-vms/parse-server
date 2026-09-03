@@ -675,7 +675,8 @@ export interface LiveQueryServerOptions {
   pubSubAdapter: ?Adapter<PubSubAdapter>;
   /* Adapter module for the WebSocketServer */
   wssAdapter: ?Adapter<WSSAdapter>;
-  /* Class-scoped handlers for LiveQuery subscription lifecycle events. */
+  /* Class-scoped handlers for LiveQuery subscription lifecycle events. This option can only be configured programmatically.
+  :ENV: */
   subscriptionHandlers: ?LiveQuerySubscriptionHandlers;
 }
 

@@ -1061,8 +1061,8 @@ module.exports.LiveQueryServerOptions = {
     help: 'This string should match the serverURL in use by your Parse Server. If you deploy the LiveQuery server alongside Parse Server, the LiveQuery server will try to use the same serverURL.',
   },
   subscriptionHandlers: {
-    help:
-      'Class-scoped handlers for LiveQuery subscription lifecycle events. This option can only be configured programmatically.',
+    help: 'Class-scoped handlers for LiveQuery subscription lifecycle events. This option can only be configured programmatically.',
+    action: parsers.objectParser,
   },
   websocketTimeout: {
     env: 'PARSE_LIVE_QUERY_SERVER_WEBSOCKET_TIMEOUT',
