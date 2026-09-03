@@ -76,6 +76,7 @@ export class ParseWebSocket extends events.EventEmitter {
       return this.disconnectPromise;
     }
     this.emit('disconnecting', reason);
+    this.emit('disconnect', reason);
     this.disconnectPromise = Promise.resolve()
       .then(() => this.disconnectHandler?.(reason))
       .catch(error => logger.error('Failed running LiveQuery socket cleanup', error));

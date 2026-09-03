@@ -299,9 +299,7 @@ describe('ParseLiveQuery', function () {
     const logger = require('../lib/logger').logger;
     spyOn(logger, 'error').and.callFake(() => {});
 
-    let session = undefined;
-    Parse.Cloud.afterLiveQueryEvent('TestObject', ({ sessionToken }) => {
-      session = sessionToken;
+    Parse.Cloud.afterLiveQueryEvent('TestObject', () => {
       /* eslint-disable no-undef */
       foo.bar();
       /* eslint-enable no-undef */
@@ -314,7 +312,7 @@ describe('ParseLiveQuery', function () {
     await object.save();
     await new Promise(resolve => subscription.on('error', resolve));
     expect(logger.error).toHaveBeenCalledWith(
-      `Failed running afterLiveQueryEvent on class TestObject for event update with session ${session} with:\n Error: {"message":"foo is not defined","code":141}`
+      'Failed running afterLiveQueryEvent on class TestObject for event update with:\n Error: {"message":"foo is not defined","code":141}'
     );
   });
 
@@ -588,9 +586,7 @@ describe('ParseLiveQuery', function () {
 
     const logger = require('../lib/logger').logger;
     spyOn(logger, 'error').and.callFake(() => {});
-    let token = undefined;
-    Parse.Cloud.beforeConnect(({ sessionToken }) => {
-      token = sessionToken;
+    Parse.Cloud.beforeConnect(() => {
       /* eslint-disable no-undef */
       foo.bar();
       /* eslint-enable no-undef */
@@ -599,7 +595,7 @@ describe('ParseLiveQuery', function () {
       new Error('foo is not defined')
     );
     expect(logger.error).toHaveBeenCalledWith(
-      `Failed running beforeConnect for session ${token} with:\n Error: {"message":"foo is not defined","code":141}`
+      'Failed running beforeConnect with:\n Error: {"message":"foo is not defined","code":141}'
     );
   });
 
@@ -642,7 +638,7 @@ describe('ParseLiveQuery', function () {
     await expectAsync(query.subscribe()).toBeRejectedWith(new Error('foo is not defined'));
 
     expect(logger.error).toHaveBeenCalledWith(
-      `Failed running beforeSubscribe on TestObject for session undefined with:\n Error: {"message":"foo is not defined","code":141}`
+      'Failed running beforeSubscribe on TestObject with:\n Error: {"message":"foo is not defined","code":141}'
     );
   });
 
