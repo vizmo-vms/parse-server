@@ -557,7 +557,7 @@ describe('ParseLiveQueryServer', function () {
   it('rolls back a subscription when its lifecycle handler rejects', async () => {
     const onSubscribe = jasmine
       .createSpy('onSubscribe')
-      .and.returnValue(Promise.reject(new Error('handler failed')));
+      .and.callFake(() => Promise.reject(new Error('handler failed')));
     const onUnsubscribe = jasmine.createSpy('onUnsubscribe');
     const parseLiveQueryServer = new ParseLiveQueryServer(
       {},
@@ -1149,7 +1149,7 @@ describe('ParseLiveQueryServer', function () {
     expect(spy.calls.count()).toBe(2);
   });
 
-  it('does not delete subscription info on client disconnect', async () => {
+  it('deletes subscription info on client disconnect', async () => {
     const parseLiveQueryServer = new ParseLiveQueryServer({});
     // Add mock client and subscription
     const clientId = 1;
@@ -1172,11 +1172,7 @@ describe('ParseLiveQueryServer', function () {
     // Prove disconnect handler executed: client removed from server
     expect(parseLiveQueryServer.clients.has(clientId)).toBeFalse();
 
-    // The disconnect handler must NOT call deleteSubscriptionInfo;
-    // only the explicit unsubscribe handler does.
-    // The advisory GHSA-3rpv-5775-m86r claims subscriptionInfo
-    // becomes undefined on disconnect, but it does not.
-    expect(client.deleteSubscriptionInfo).not.toHaveBeenCalled();
+    expect(client.deleteSubscriptionInfo).toHaveBeenCalledWith(requestId);
   });
 
   it('has no subscription and can handle object delete command', function () {

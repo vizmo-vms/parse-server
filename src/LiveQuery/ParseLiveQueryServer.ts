@@ -930,7 +930,10 @@ class ParseLiveQueryServer {
     if (!sessionToken) {
       return;
     }
-    const { auth } = await this.getAuthForSessionToken(sessionToken);
+    const authResult = await this.getAuthForSessionToken(sessionToken);
+    const lifecycleAuthResults = client._subscriptionLifecycleAuthResults?.get(requestId);
+    lifecycleAuthResults?.set(sessionToken, authResult.userId);
+    const { auth } = authResult;
     return auth;
   }
 
@@ -1049,14 +1052,23 @@ class ParseLiveQueryServer {
     }
     const sessionTokens = [subscriptionInfo.sessionToken, client.sessionToken];
     const attemptedTokens = new Set();
+    const lifecycleAuthResults = subscriptionInfo.lifecycleAuthResults;
     let userId;
     for (const sessionToken of sessionTokens) {
       if (!sessionToken || attemptedTokens.has(sessionToken)) {
         continue;
       }
       attemptedTokens.add(sessionToken);
+      if (lifecycleAuthResults?.has(sessionToken)) {
+        userId = lifecycleAuthResults.get(sessionToken);
+        if (userId) {
+          break;
+        }
+        continue;
+      }
       try {
         const auth = await this.getAuthForSessionToken(sessionToken);
+        lifecycleAuthResults?.set(sessionToken, auth.userId);
         if (auth.userId) {
           userId = auth.userId;
           break;
@@ -1089,7 +1101,7 @@ class ParseLiveQueryServer {
       lifecycleEvent.installationId = client.installationId;
     }
     if (event === 'subscribe') {
-      lifecycleEvent.query = { where: deepcopy(subscriptionInfo.subscription.query || {}) };
+      lifecycleEvent.query = { where: structuredClone(subscriptionInfo.subscription.query || {}) };
     }
     if (reason) {
       lifecycleEvent.reason = reason;
@@ -1220,6 +1232,12 @@ class ParseLiveQueryServer {
       return;
     }
     const className = request.query.className;
+    const subscriptionHandlers = this.config.subscriptionHandlers?.[className];
+    if (subscriptionHandlers?.onSubscribe || subscriptionHandlers?.onUnsubscribe) {
+      client._subscriptionLifecycleAuthResults ??= new Map();
+      client._subscriptionLifecycleAuthResults.set(request.requestId, new Map());
+    }
+    let subscriptionInfoCreated = false;
     let authCalled = false;
     try {
       const trigger = getTrigger(className, 'beforeSubscribe', Parse.applicationId);
@@ -1471,7 +1489,13 @@ class ParseLiveQueryServer {
       if (request.sessionToken) {
         subscriptionInfo.sessionToken = request.sessionToken;
       }
+      const lifecycleAuthResults = client._subscriptionLifecycleAuthResults?.get(request.requestId);
+      if (lifecycleAuthResults) {
+        subscriptionInfo.lifecycleAuthResults = lifecycleAuthResults;
+        client._subscriptionLifecycleAuthResults.delete(request.requestId);
+      }
       client.addSubscriptionInfo(request.requestId, subscriptionInfo);
+      subscriptionInfoCreated = true;
 
       // Add clientId to subscription
       subscription.addClientSubscription(parseWebsocket.clientId, request.requestId);
@@ -1538,6 +1562,10 @@ class ParseLiveQueryServer {
       logger.error(
         `Failed running beforeSubscribe on ${className} with:\n Error: ` + JSON.stringify(error)
       );
+    } finally {
+      if (!subscriptionInfoCreated) {
+        client._subscriptionLifecycleAuthResults?.delete(request.requestId);
+      }
     }
   }
 
