@@ -919,6 +919,101 @@ describe('ParseLiveQueryServer', function () {
     expect(parseLiveQueryServer.subscriptions.size).toBe(0);
   });
 
+  it('awaits an in-flight exact removal when the client disconnects', async () => {
+    let resolveUnsubscribe;
+    let signalUnsubscribeStarted;
+    const unsubscribeStarted = new Promise(resolve => {
+      signalUnsubscribeStarted = resolve;
+    });
+    const onUnsubscribe = jasmine.createSpy('onUnsubscribe').and.callFake(
+      () =>
+        new Promise(resolve => {
+          signalUnsubscribeStarted();
+          resolveUnsubscribe = resolve;
+        })
+    );
+    const parseLiveQueryServer = new ParseLiveQueryServer(
+      {},
+      { subscriptionHandlers: { TestObject: { onUnsubscribe } } }
+    );
+    const clientId = 1;
+    const parseWebSocket = { clientId };
+    const client = addMockClient(parseLiveQueryServer, clientId);
+    await parseLiveQueryServer._handleSubscribe(parseWebSocket, {
+      requestId: 1,
+      query: { className: 'TestObject', where: {} },
+    });
+
+    const unsubscribePromise = parseLiveQueryServer._handleUnsubscribe(parseWebSocket, {
+      requestId: 1,
+    });
+    await unsubscribeStarted;
+    let disconnectResolved = false;
+    const disconnectPromise = parseLiveQueryServer
+      ._handleDisconnect(parseWebSocket, 'socket_error')
+      .then(() => {
+        disconnectResolved = true;
+      });
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(disconnectResolved).toBeFalse();
+    expect(onUnsubscribe).toHaveBeenCalledTimes(1);
+
+    resolveUnsubscribe();
+    await Promise.all([unsubscribePromise, disconnectPromise]);
+
+    expect(disconnectResolved).toBeTrue();
+    expect(onUnsubscribe).toHaveBeenCalledTimes(1);
+    expect(client.subscriptionInfos.size).toBe(0);
+    expect(parseLiveQueryServer.clients.size).toBe(0);
+    expect(parseLiveQueryServer.subscriptions.size).toBe(0);
+  });
+
+  it('awaits an in-flight exact removal before graceful shutdown closes sockets', async () => {
+    let resolveUnsubscribe;
+    let signalUnsubscribeStarted;
+    const unsubscribeStarted = new Promise(resolve => {
+      signalUnsubscribeStarted = resolve;
+    });
+    const onUnsubscribe = jasmine.createSpy('onUnsubscribe').and.callFake(
+      () =>
+        new Promise(resolve => {
+          signalUnsubscribeStarted();
+          resolveUnsubscribe = resolve;
+        })
+    );
+    const parseLiveQueryServer = new ParseLiveQueryServer(
+      {},
+      { subscriptionHandlers: { TestObject: { onUnsubscribe } } }
+    );
+    const parseWebSocket = {
+      clientId: 1,
+      ws: { close: jasmine.createSpy('close') },
+    };
+    addMockClient(parseLiveQueryServer, 1, undefined, undefined, parseWebSocket);
+    await parseLiveQueryServer._handleSubscribe(parseWebSocket, {
+      requestId: 1,
+      query: { className: 'TestObject', where: {} },
+    });
+    parseLiveQueryServer.subscriber.isOpen = true;
+
+    const unsubscribePromise = parseLiveQueryServer._handleUnsubscribe(parseWebSocket, {
+      requestId: 1,
+    });
+    await unsubscribeStarted;
+    const shutdownPromise = parseLiveQueryServer.shutdown();
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(parseWebSocket.ws.close).not.toHaveBeenCalled();
+    expect(onUnsubscribe).toHaveBeenCalledTimes(1);
+
+    resolveUnsubscribe();
+    await Promise.all([unsubscribePromise, shutdownPromise]);
+
+    expect(parseWebSocket.ws.close).toHaveBeenCalledTimes(1);
+    expect(onUnsubscribe).toHaveBeenCalledTimes(1);
+  });
+
   it('awaits lifecycle cleanup before graceful shutdown closes sockets', async () => {
     let resolveUnsubscribe;
     let signalUnsubscribeStarted;

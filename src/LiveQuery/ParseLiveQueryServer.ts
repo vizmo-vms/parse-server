@@ -599,6 +599,9 @@ class ParseLiveQueryServer {
           this._removeSubscription(client, clientId, requestId, reason)
         )
       );
+      await Promise.all(
+        Array.from(client._subscriptionRemovalPromises?.values() || [])
+      );
 
       logger.verbose('Current clients %d', this.clients.size);
       logger.verbose('Current subscriptions %d', this.subscriptions.size);
@@ -1153,67 +1156,82 @@ class ParseLiveQueryServer {
     notifyClient: boolean = false,
     emitEvents: boolean = true
   ): Promise<boolean> {
+    const existingRemovalPromise = client._subscriptionRemovalPromises?.get(requestId);
     const subscriptionInfo = client.getSubscriptionInfo(requestId);
     if (typeof subscriptionInfo === 'undefined' || subscriptionInfo.ended) {
+      if (existingRemovalPromise) {
+        await existingRemovalPromise;
+      }
       return false;
     }
     subscriptionInfo.ended = true;
     client.deleteSubscriptionInfo(requestId);
 
-    const subscription = subscriptionInfo.subscription;
-    const className = subscription.className;
-    subscription.deleteClientSubscription(clientId, requestId);
-    const classSubscriptions = this.subscriptions.get(className);
-    if (classSubscriptions) {
-      if (!subscription.hasSubscribingClient()) {
-        classSubscriptions.delete(subscription.hash);
+    const removalPromise = (async () => {
+      const subscription = subscriptionInfo.subscription;
+      const className = subscription.className;
+      subscription.deleteClientSubscription(clientId, requestId);
+      const classSubscriptions = this.subscriptions.get(className);
+      if (classSubscriptions) {
+        if (!subscription.hasSubscribingClient()) {
+          classSubscriptions.delete(subscription.hash);
+        }
+        if (classSubscriptions.size === 0) {
+          this.subscriptions.delete(className);
+        }
       }
-      if (classSubscriptions.size === 0) {
-        this.subscriptions.delete(className);
-      }
-    }
 
-    if (subscriptionInfo.subscribePromise) {
-      try {
-        await subscriptionInfo.subscribePromise;
-      } catch (error) {
-        subscriptionInfo.subscribeFailed = true;
+      if (subscriptionInfo.subscribePromise) {
+        try {
+          await subscriptionInfo.subscribePromise;
+        } catch (error) {
+          subscriptionInfo.subscribeFailed = true;
+        }
       }
-    }
 
-    const shouldRunUnsubscribeHandler =
-      subscriptionInfo.subscribeStarted || subscriptionInfo.subscribeHandlerStarted;
-    if (emitEvents && shouldRunUnsubscribeHandler && !subscriptionInfo.subscribeFailed) {
-      try {
-        await this._runSubscriptionHandler(
-          'unsubscribe',
+      const shouldRunUnsubscribeHandler =
+        subscriptionInfo.subscribeStarted || subscriptionInfo.subscribeHandlerStarted;
+      if (emitEvents && shouldRunUnsubscribeHandler && !subscriptionInfo.subscribeFailed) {
+        try {
+          await this._runSubscriptionHandler(
+            'unsubscribe',
+            client,
+            clientId,
+            requestId,
+            subscriptionInfo,
+            reason
+          );
+        } catch (error) {
+          logger.error(`Failed running subscription onUnsubscribe handler for ${className}`);
+        }
+      }
+      if (emitEvents && subscriptionInfo.subscribeEventEmitted) {
+        runLiveQueryEventHandlers({
           client,
-          clientId,
-          requestId,
-          subscriptionInfo,
-          reason
-        );
-      } catch (error) {
-        logger.error(`Failed running subscription onUnsubscribe handler for ${className}`);
+          event: 'unsubscribe',
+          clients: this.clients.size,
+          subscriptions: this.subscriptions.size,
+          sessionToken: subscriptionInfo.sessionToken,
+          useMasterKey: client.hasMasterKey,
+          installationId: client.installationId,
+        });
+      }
+
+      if (notifyClient) {
+        client.pushUnsubscribe(requestId);
+        logger.verbose(`Delete client: ${clientId} | subscription: ${requestId}`);
+      }
+      return true;
+    })();
+    client._subscriptionRemovalPromises ??= new Map();
+    client._subscriptionRemovalPromises.set(requestId, removalPromise);
+    try {
+      return await removalPromise;
+    } finally {
+      if (client._subscriptionRemovalPromises.get(requestId) === removalPromise) {
+        client._subscriptionRemovalPromises.delete(requestId);
       }
     }
-    if (emitEvents && subscriptionInfo.subscribeEventEmitted) {
-      runLiveQueryEventHandlers({
-        client,
-        event: 'unsubscribe',
-        clients: this.clients.size,
-        subscriptions: this.subscriptions.size,
-        sessionToken: subscriptionInfo.sessionToken,
-        useMasterKey: client.hasMasterKey,
-        installationId: client.installationId,
-      });
-    }
-
-    if (notifyClient) {
-      client.pushUnsubscribe(requestId);
-      logger.verbose(`Delete client: ${clientId} | subscription: ${requestId}`);
-    }
-    return true;
   }
 
   async _handleSubscribe(parseWebsocket: any, request: any): Promise<any> {
@@ -1451,6 +1469,10 @@ class ParseLiveQueryServer {
         }
       };
 
+      const pendingRemoval = client._subscriptionRemovalPromises?.get(request.requestId);
+      if (pendingRemoval) {
+        await pendingRemoval;
+      }
       if (!this._isActiveClient(parseWebsocket, client)) {
         return;
       }
