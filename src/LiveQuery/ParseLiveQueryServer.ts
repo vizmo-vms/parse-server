@@ -1238,6 +1238,7 @@ class ParseLiveQueryServer {
       client._subscriptionLifecycleAuthResults.set(request.requestId, new Map());
     }
     let subscriptionInfoCreated = false;
+    let releaseSubscriptionLifecycle;
     let authCalled = false;
     try {
       const trigger = getTrigger(className, 'beforeSubscribe', Parse.applicationId);
@@ -1432,6 +1433,28 @@ class ParseLiveQueryServer {
       // Validate regex patterns in the subscription query
       this._validateQueryConstraints(request.query.where);
 
+      client._subscriptionLifecycleLocks ??= new Map();
+      const previousSubscriptionLifecycle =
+        client._subscriptionLifecycleLocks.get(request.requestId) || Promise.resolve();
+      let releaseLifecycleLock;
+      const subscriptionLifecycleLock = new Promise(resolve => {
+        releaseLifecycleLock = resolve;
+      });
+      client._subscriptionLifecycleLocks.set(request.requestId, subscriptionLifecycleLock);
+      await previousSubscriptionLifecycle;
+      releaseSubscriptionLifecycle = () => {
+        releaseLifecycleLock();
+        if (
+          client._subscriptionLifecycleLocks.get(request.requestId) === subscriptionLifecycleLock
+        ) {
+          client._subscriptionLifecycleLocks.delete(request.requestId);
+        }
+      };
+
+      if (!this._isActiveClient(parseWebsocket, client)) {
+        return;
+      }
+
       // If this client already has a subscription registered under this
       // requestId, replace it by tearing down the previous subscription before
       // creating the new one. The client-side metadata map is keyed only by
@@ -1441,17 +1464,12 @@ class ParseLiveQueryServer {
       // surviving client metadata and never reaches the orphaned subscription).
       const previousSubscriptionInfo = client.getSubscriptionInfo(request.requestId);
       if (previousSubscriptionInfo) {
-        const previousSubscription = previousSubscriptionInfo.subscription;
-        previousSubscription.deleteClientSubscription(parseWebsocket.clientId, request.requestId);
-        const previousClassSubscriptions = this.subscriptions.get(previousSubscription.className);
-        if (previousClassSubscriptions) {
-          if (!previousSubscription.hasSubscribingClient()) {
-            previousClassSubscriptions.delete(previousSubscription.hash);
-          }
-          if (previousClassSubscriptions.size === 0) {
-            this.subscriptions.delete(previousSubscription.className);
-          }
-        }
+        await this._removeSubscription(
+          client,
+          parseWebsocket.clientId,
+          request.requestId,
+          'query_update'
+        );
       }
 
       if (!this._isActiveClient(parseWebsocket, client)) {
@@ -1566,6 +1584,7 @@ class ParseLiveQueryServer {
       if (!subscriptionInfoCreated) {
         client._subscriptionLifecycleAuthResults?.delete(request.requestId);
       }
+      releaseSubscriptionLifecycle?.();
     }
   }
 

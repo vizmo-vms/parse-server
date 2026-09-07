@@ -788,6 +788,60 @@ describe('ParseLiveQueryServer', function () {
     expect(legacyEvents).not.toContain('unsubscribe');
   });
 
+  it('orders duplicate request subscription replacement after pending lifecycle work', async () => {
+    const events = [];
+    let resolveFirstSubscribe;
+    let signalFirstSubscribeStarted;
+    const firstSubscribeStarted = new Promise(resolve => {
+      signalFirstSubscribeStarted = resolve;
+    });
+    const onSubscribe = jasmine.createSpy('onSubscribe').and.callFake(event => {
+      const version = event.query.where.version;
+      events.push(`subscribe:${version}`);
+      if (version === 1) {
+        signalFirstSubscribeStarted();
+        return new Promise(resolve => {
+          resolveFirstSubscribe = resolve;
+        });
+      }
+    });
+    const onUnsubscribe = jasmine.createSpy('onUnsubscribe').and.callFake(() => {
+      events.push('unsubscribe');
+    });
+    const parseLiveQueryServer = new ParseLiveQueryServer(
+      {},
+      { subscriptionHandlers: { TestObject: { onSubscribe, onUnsubscribe } } }
+    );
+    const clientId = 1;
+    const parseWebSocket = { clientId };
+    const client = addMockClient(parseLiveQueryServer, clientId);
+
+    const firstSubscribePromise = parseLiveQueryServer._handleSubscribe(parseWebSocket, {
+      requestId: 7,
+      query: { className: 'TestObject', where: { version: 1 } },
+    });
+    await firstSubscribeStarted;
+    const replacementPromise = parseLiveQueryServer._handleSubscribe(parseWebSocket, {
+      requestId: 7,
+      query: { className: 'TestObject', where: { version: 2 } },
+    });
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(events).toEqual(['subscribe:1']);
+    expect(onUnsubscribe).not.toHaveBeenCalled();
+
+    resolveFirstSubscribe();
+    await Promise.all([firstSubscribePromise, replacementPromise]);
+
+    expect(events).toEqual(['subscribe:1', 'unsubscribe', 'subscribe:2']);
+    expect(onUnsubscribe).toHaveBeenCalledTimes(1);
+    expect(onUnsubscribe.calls.first().args[0].reason).toBe('query_update');
+    expect(client.pushSubscribe).toHaveBeenCalledTimes(2);
+    expect(client.subscriptionInfos.size).toBe(1);
+    expect(client.getSubscriptionInfo(7).subscription.query).toEqual({ version: 2 });
+    expect(parseLiveQueryServer.subscriptions.size).toBe(1);
+  });
+
   it('replaces a subscription through the centralized removal path', async () => {
     const onSubscribe = jasmine.createSpy('onSubscribe');
     const onUnsubscribe = jasmine.createSpy('onUnsubscribe');

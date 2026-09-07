@@ -205,6 +205,56 @@ describe('ParseWebSocketServer', function () {
     server.close();
   });
 
+  it('awaits disconnect cleanup when a legacy disconnect listener throws', async () => {
+    let resolveCleanup;
+    const events = [];
+    let parseWebSocket;
+    const onDisconnect = jasmine.createSpy('onDisconnect').and.callFake(
+      () =>
+        new Promise(resolve => {
+          events.push('cleanup:start');
+          resolveCleanup = () => {
+            events.push('cleanup:end');
+            resolve();
+          };
+        })
+    );
+    const onConnectCallback = jasmine.createSpy('onConnectCallback').and.callFake(socket => {
+      parseWebSocket = socket;
+      parseWebSocket.setDisconnectHandler(onDisconnect);
+      parseWebSocket.on('disconnect', () => {
+        events.push('legacy');
+        throw new Error('legacy disconnect listener failed');
+      });
+    });
+    const http = require('http');
+    const server = http.createServer();
+    const parseWebSocketServer = new ParseWebSocketServer(server, onConnectCallback, {
+      websocketTimeout: 100,
+    }).server;
+    const ws = new EventEmitter();
+    ws.readyState = 0;
+    ws.OPEN = 0;
+    ws.ping = jasmine.createSpy('ping');
+    ws.terminate = jasmine.createSpy('terminate');
+    parseWebSocketServer.onConnection(ws);
+
+    const disconnectResult = parseWebSocket
+      .disconnectAndTerminate('socket_error')
+      .then(() => 'resolved', () => 'rejected');
+    await Promise.resolve();
+
+    expect(onDisconnect).toHaveBeenCalledWith('socket_error');
+    expect(events).toEqual(['legacy', 'cleanup:start']);
+    expect(ws.terminate).not.toHaveBeenCalled();
+
+    resolveCleanup();
+    expect(await disconnectResult).toBe('resolved');
+    expect(events).toEqual(['legacy', 'cleanup:start', 'cleanup:end']);
+    expect(ws.terminate).toHaveBeenCalledTimes(1);
+    server.close();
+  });
+
   afterEach(function () {
     jasmine.restoreLibrary('ws', 'Server');
   });
