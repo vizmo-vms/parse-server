@@ -1,4 +1,18 @@
 import { Auth } from '../Auth';
+type SubscriptionRemovalReason = 'client_unsubscribe' | 'query_update' | 'socket_close' | 'socket_error' | 'pong_timeout' | 'server_shutdown' | 'subscribe_rollback';
+type SubscriptionLifecycleEvent = {
+    event: 'subscribe' | 'unsubscribe';
+    className: string;
+    clientId: string;
+    requestId: number;
+    installationId?: string;
+    query?: {
+        where: any;
+    };
+    reason?: SubscriptionRemovalReason;
+    useMasterKey: boolean;
+    userId?: string;
+};
 declare class ParseLiveQueryServer {
     server: any;
     config: any;
@@ -17,6 +31,8 @@ declare class ParseLiveQueryServer {
     _onAfterDelete(message: any): Promise<void>;
     _onAfterSave(message: any): Promise<void>;
     _onConnect(parseWebsocket: any): void;
+    _handleDisconnect(parseWebsocket: any, reason?: SubscriptionRemovalReason): Promise<void>;
+    _isActiveClient(parseWebsocket: any, client: any): boolean;
     _matchesSubscription(parseObject: any, subscription: any): boolean;
     _clearCachedRoles(userId: string): Promise<void>;
     getAuthForSessionToken(sessionToken?: string): Promise<{
@@ -33,8 +49,12 @@ declare class ParseLiveQueryServer {
     _handleConnect(parseWebsocket: any, request: any): Promise<any>;
     _hasMasterKey(request: any, validKeyPairs: any): boolean;
     _validateKeys(request: any, validKeyPairs: any): boolean;
+    _getSubscriptionLifecycleUserId(client: any, subscriptionInfo: any): Promise<string | void>;
+    _getSubscriptionLifecycleEvent(event: 'subscribe' | 'unsubscribe', client: any, clientId: string, requestId: number, subscriptionInfo: any, reason?: SubscriptionRemovalReason): Promise<SubscriptionLifecycleEvent>;
+    _runSubscriptionHandler(event: 'subscribe' | 'unsubscribe', client: any, clientId: string, requestId: number, subscriptionInfo: any, reason?: SubscriptionRemovalReason): Promise<void>;
+    _removeSubscription(client: any, clientId: string, requestId: number, reason: SubscriptionRemovalReason, notifyClient?: boolean, emitEvents?: boolean): Promise<boolean>;
     _handleSubscribe(parseWebsocket: any, request: any): Promise<any>;
-    _handleUpdateSubscription(parseWebsocket: any, request: any): any;
-    _handleUnsubscribe(parseWebsocket: any, request: any, notifyClient?: boolean): any;
+    _handleUpdateSubscription(parseWebsocket: any, request: any): Promise<any>;
+    _handleUnsubscribe(parseWebsocket: any, request: any, notifyClient?: boolean, reason?: SubscriptionRemovalReason): Promise<any>;
 }
 export { ParseLiveQueryServer };

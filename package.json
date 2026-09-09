@@ -1,6 +1,6 @@
 {
   "name": "@vizmo/parse-server",
-  "version": "9.10.0-1",
+  "version": "9.10.0-2",
   "description": "An express module providing a Parse-compatible API server",
   "main": "lib/index.js",
   "repository": {

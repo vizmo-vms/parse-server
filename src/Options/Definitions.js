@@ -1060,6 +1060,10 @@ module.exports.LiveQueryServerOptions = {
     env: 'PARSE_LIVE_QUERY_SERVER_SERVER_URL',
     help: 'This string should match the serverURL in use by your Parse Server. If you deploy the LiveQuery server alongside Parse Server, the LiveQuery server will try to use the same serverURL.',
   },
+  subscriptionHandlers: {
+    help: 'Class-scoped handlers for LiveQuery subscription lifecycle events. This option can only be configured programmatically.',
+    action: parsers.objectParser,
+  },
   websocketTimeout: {
     env: 'PARSE_LIVE_QUERY_SERVER_WEBSOCKET_TIMEOUT',
     help: 'Number of milliseconds between ping/pong frames. The WebSocket server sends ping/pong frames to the clients to keep the WebSocket alive. This value defines the interval of the ping/pong frame from the server to clients, defaults to 10 * 1000 ms (10 s).',
