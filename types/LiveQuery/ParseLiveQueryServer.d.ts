@@ -32,6 +32,7 @@ declare class ParseLiveQueryServer {
     _onAfterSave(message: any): Promise<void>;
     _onConnect(parseWebsocket: any): void;
     _handleDisconnect(parseWebsocket: any, reason?: SubscriptionRemovalReason): Promise<void>;
+    _validateQueryConstraints(where: any): void;
     _isActiveClient(parseWebsocket: any, client: any): boolean;
     _matchesSubscription(parseObject: any, subscription: any): boolean;
     _clearCachedRoles(userId: string): Promise<void>;
@@ -40,6 +41,8 @@ declare class ParseLiveQueryServer {
         userId?: string;
     }>;
     _matchesCLP(classLevelPermissions?: any, object?: any, client?: any, requestId?: number, op?: string): Promise<any>;
+    _loadRolesForProtectedFields(classLevelPermissions?: any, clientAuth?: any): Promise<void>;
+    _rolesForCLPOperation(classLevelPermissions?: any, clientAuth?: any, op?: string, appConfig?: any): Promise<string[]>;
     _filterSensitiveData(classLevelPermissions?: any, res?: any, client?: any, requestId?: number, op?: string, query?: any): Promise<void>;
     _getCLPOperation(query: any): "get" | "find";
     _verifyACL(acl: any, token: string): Promise<boolean>;

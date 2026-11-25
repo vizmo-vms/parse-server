@@ -187,6 +187,8 @@ ParseCloud.job = function (functionName, handler) {
  *
  * If you want to use beforeSave for a predefined class in the Parse JavaScript SDK (e.g. {@link Parse.User} or {@link Parse.File}), you should pass the class itself and not the String for arg1.
  *
+ * For a `Parse.Object` subclass, the response to a save request without the master key or maintenance key contains stored field values, for example the values that this function sets, only if the client can read the object as the save writes it. To restrict the response, set the ACL in this function.
+ *
  * ```
  * Parse.Cloud.beforeSave('MyCustomClass', (request) => {
  *   // code here
@@ -424,6 +426,10 @@ ParseCloud.beforePasswordResetRequest = function (handler, validationHandler) {
  * **Available in Cloud Code only.**
  *
  * If you want to use afterSave for a predefined class in the Parse JavaScript SDK (e.g. {@link Parse.User} or {@link Parse.File}), you should pass the class itself and not the String for arg1.
+ *
+ * For a `Parse.Object` subclass, the response to a save request without the master key or maintenance key contains stored field values only if the client can read the object as the save writes it. Changes that this function makes do not change that: if it restricts read access, for example with a new ACL, the response still contains the stored field values and the values that this function sets on `request.object`. To restrict the response, set the ACL in a `beforeSave` trigger.
+ *
+ * For a `Parse.Object` subclass, if the function returns a plain object instead of a `Parse.Object`, Parse Server sends that object to the client as the response of the save request. It does not remove fields from it that the client cannot read, except protected fields if `protectedFieldsSaveResponseExempt` is `false`. For `Parse.File` and `Parse.Config`, the return value does not change the response.
  *
  * ```
  * Parse.Cloud.afterSave('MyCustomClass', async function(request) {
@@ -735,7 +741,7 @@ module.exports = ParseCloud;
  * @property {Boolean} isChallenge If true, means the current request is originally triggered by an auth challenge.
  * @property {Parse.User} user If set, the user that made the request.
  * @property {Parse.Object} object The object triggering the hook.
- * @property {String} ip The IP address of the client making the request. To ensure retrieving the correct IP address, set the Parse Server option `trustProxy: true` if Parse Server runs behind a proxy server, for example behind a load balancer.
+ * @property {String} ip The IP address of the client making the request. If Parse Server runs behind a proxy server, for example a load balancer, set the Parse Server option `trustProxy` to match the proxy setup, for example to the number of proxy hops or to `'loopback'` for a proxy on the same host, so that the address is resolved from the `X-Forwarded-For` header that the proxy sets. Do not set `trustProxy: true`, as that trusts an `X-Forwarded-For` header that any client can set.
  * @property {Object} headers The original HTTP headers for the request.
  * @property {String} triggerName The name of the trigger (`beforeSave`, `afterSave`, ...)
  * @property {Object} log The current logger inside Parse Server.

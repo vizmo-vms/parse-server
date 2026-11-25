@@ -36,8 +36,9 @@ declare class ParseServer {
      * Create an express app for the parse server
      * @param {Object} options let you specify the maxUploadSize when creating the express app  */
     static app(options: any): any;
-    static promiseRouter({ appId }: {
+    static promiseRouter({ appId, options }: {
         appId: any;
+        options: any;
     }): any;
     /**
      * starts the parse server's express app

@@ -149,6 +149,15 @@ describe_only_db('postgres')('PostgresStorageAdapter', () => {
     await expectAsync(adapter.getClass('UnknownClass')).toBeRejectedWith(undefined);
   });
 
+  it('findOneAndUpdate rethrows errors other than unique violation errors', async () => {
+    await dropTable(adapter._client, 'MissingClass');
+    const schema = { fields: { foo: { type: 'String' } } };
+    // 42P01: relation does not exist
+    await expectAsync(
+      adapter.findOneAndUpdate('MissingClass', schema, {}, { foo: 'bar' })
+    ).toBeRejectedWith(jasmine.objectContaining({ code: '42P01' }));
+  });
+
   it('$relativeTime should error on $eq', async () => {
     const tableName = '_User';
     const schema = {
@@ -569,6 +578,24 @@ describe_only_db('postgres')('PostgresStorageAdapter', () => {
     expect(foundFunction.format).toBe('public.idempotency_delete_expired_records()');
     await adapter.deleteIdempotencyFunction();
     await client.none(qs);
+  });
+
+  it('does not throw when dropping an index that is already gone', async () => {
+    const className = 'ConcurrentIndexDrop';
+    await dropTable(adapter._client, className);
+    await adapter.createTable(className, {
+      fields: {
+        name: { type: 'String' },
+      },
+    });
+    await adapter.createIndexes(className, [{ name: 'name_idx', key: 'name' }]);
+    const created = await adapter.getIndexes(className);
+    expect(created.find(index => index.indexname === 'name_idx')).toBeDefined();
+    await adapter.dropIndexes(className, ['name_idx']);
+    await adapter.dropIndexes(className, ['name_idx']);
+    const indexes = await adapter.getIndexes(className);
+    expect(indexes.find(index => index.indexname === 'name_idx')).toBeUndefined();
+    await dropTable(adapter._client, className);
   });
 });
 

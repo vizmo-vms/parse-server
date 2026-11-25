@@ -1298,6 +1298,436 @@ describe('Installations', () => {
   // TODO: Do we need to support _tombstone disabling of installations?
   // TODO: Test deletion, badge increments
 
+  describe('access control for non-master clients', () => {
+    const anonymousHeaders = {
+      'X-Parse-Application-Id': 'test',
+      'X-Parse-REST-API-Key': 'rest',
+    };
+
+    it('blocks the find operation for an unauthenticated client', async () => {
+      await rest.create(config, auth.nobody(config), '_Installation', {
+        installationId: '12345678-abcd-abcd-abcd-123456789abc',
+        deviceType: 'android',
+      });
+      let error;
+      try {
+        await request({
+          method: 'GET',
+          headers: anonymousHeaders,
+          url: 'http://localhost:8378/1/installations',
+        });
+        fail('find should have been rejected');
+        return;
+      } catch (e) {
+        error = e;
+      }
+      expect(error.data.code).toBe(Parse.Error.OPERATION_FORBIDDEN);
+      expect(error.data.error).toBe('Permission denied');
+    });
+
+    it('blocks the delete operation for an unauthenticated client', async () => {
+      const created = await rest.create(config, auth.nobody(config), '_Installation', {
+        installationId: '12345678-abcd-abcd-abcd-123456789abc',
+        deviceType: 'android',
+      });
+      let error;
+      try {
+        await request({
+          method: 'DELETE',
+          headers: anonymousHeaders,
+          url: 'http://localhost:8378/1/installations/' + created.response.objectId,
+        });
+        fail('delete should have been rejected');
+        return;
+      } catch (e) {
+        error = e;
+      }
+      expect(error.data.code).toBe(Parse.Error.OPERATION_FORBIDDEN);
+      expect(error.data.error).toBe('Permission denied');
+      // The row is still present: the anonymous delete did not take effect.
+      const remaining = await database.adapter.find('_Installation', installationSchema, {}, {});
+      expect(remaining.length).toBe(1);
+    });
+
+    it('blocks the find operation for an authenticated non-master user', async () => {
+      // Even a logged-in user cannot enumerate installations, so another
+      // device's objectId cannot be discovered through an authenticated session.
+      const user = await Parse.User.signUp('installation-acl-user', 'pass-12345678');
+      await rest.create(config, auth.nobody(config), '_Installation', {
+        installationId: '12345678-abcd-abcd-abcd-123456789abc',
+        deviceType: 'android',
+      });
+      let error;
+      try {
+        await request({
+          method: 'GET',
+          headers: {
+            ...anonymousHeaders,
+            'X-Parse-Session-Token': user.getSessionToken(),
+          },
+          url: 'http://localhost:8378/1/installations',
+        });
+        fail('find should have been rejected');
+        return;
+      } catch (e) {
+        error = e;
+      }
+      expect(error.data.code).toBe(Parse.Error.OPERATION_FORBIDDEN);
+      expect(error.data.error).toBe('Permission denied');
+    });
+
+    it('blocks the delete operation for an authenticated non-master user', async () => {
+      const user = await Parse.User.signUp('installation-acl-user', 'pass-12345678');
+      const created = await rest.create(config, auth.nobody(config), '_Installation', {
+        installationId: '12345678-abcd-abcd-abcd-123456789abc',
+        deviceType: 'android',
+      });
+      let error;
+      try {
+        await request({
+          method: 'DELETE',
+          headers: {
+            ...anonymousHeaders,
+            'X-Parse-Session-Token': user.getSessionToken(),
+          },
+          url: 'http://localhost:8378/1/installations/' + created.response.objectId,
+        });
+        fail('delete should have been rejected');
+        return;
+      } catch (e) {
+        error = e;
+      }
+      expect(error.data.code).toBe(Parse.Error.OPERATION_FORBIDDEN);
+      expect(error.data.error).toBe('Permission denied');
+      // The row is still present: the authenticated non-master delete did not take effect.
+      const remaining = await database.adapter.find('_Installation', installationSchema, {}, {});
+      expect(remaining.length).toBe(1);
+    });
+  });
+
+  describe('update checks for a caller without write access to the installation', () => {
+    const { randomUUID } = require('crypto');
+    const anonymousHeaders = {
+      'X-Parse-Application-Id': 'test',
+      'X-Parse-REST-API-Key': 'rest',
+      'Content-Type': 'application/json',
+    };
+    const masterHeaders = {
+      'X-Parse-Application-Id': 'test',
+      'X-Parse-Master-Key': 'test',
+      'Content-Type': 'application/json',
+    };
+    const installationId = '12345678-abcd-abcd-abcd-123456789abc';
+    const otherInstallationId = '22222222-abcd-abcd-abcd-123456789abc';
+    const deviceToken = '11433856eed2f1285fb3aa11136718c1198ed5647875096952c66bf8cb976306';
+    const otherDeviceToken = '91433856eed2f1285fb3aa11136718c1198ed5647875096952c66bf8cb976306';
+    const baseFields = { installationId, deviceToken, deviceType: 'ios' };
+
+    const signUp = () => Parse.User.signUp('installation-user-' + randomUUID(), 'pass-12345678');
+
+    // An installation that only its owner can read and write
+    const createOwnedInstallation = async (owner, fields) => {
+      const created = await rest.create(config, auth.master(config), '_Installation', {
+        ...fields,
+        ACL: { [owner.id]: { read: true, write: true } },
+      });
+      return created.response.objectId;
+    };
+
+    const update = (objectId, body, headers = anonymousHeaders) =>
+      request({
+        method: 'PUT',
+        url: 'http://localhost:8378/1/installations/' + objectId,
+        headers,
+        body: JSON.stringify(body),
+      }).catch(error => error);
+
+    const findRows = () => database.adapter.find('_Installation', installationSchema, {}, {});
+
+    const expectNotFound = response => {
+      expect(response.status).toBe(404);
+      expect(response.data.code).toBe(Parse.Error.OBJECT_NOT_FOUND);
+      expect(response.data.error).toBe('Object not found.');
+    };
+
+    // The responses to a differing value, a matching value and a nonexistent id must not differ
+    const expectSameResponses = (responses, status, code) => {
+      for (const response of responses) {
+        expect(response.status).toBe(status);
+        expect(response.data.code).toBe(code);
+        expect(response.data.error).toBe(responses[0].data.error);
+      }
+    };
+
+    const expectPermissionDenied = response => {
+      expect(response.status).toBe(400);
+      expect(response.data.code).toBe(Parse.Error.OPERATION_FORBIDDEN);
+      expect(response.data.error).toBe('Permission denied');
+    };
+
+    it('answers like a nonexistent installation when the deviceType differs from the stored value', async () => {
+      const owner = await signUp();
+      const objectId = await createOwnedInstallation(owner, baseFields);
+
+      expectNotFound(await update(objectId, { deviceType: 'android' }));
+      expectNotFound(await update(objectId, { deviceType: 'ios' }));
+      expectNotFound(await update('xxxxxxxxxx', { deviceType: 'android' }));
+
+      const rows = await findRows();
+      expect(rows.length).toBe(1);
+      expect(rows[0].deviceType).toBe('ios');
+    });
+
+    it('answers like a nonexistent installation when the installationId differs from the stored value', async () => {
+      const owner = await signUp();
+      const objectId = await createOwnedInstallation(owner, baseFields);
+
+      expectNotFound(await update(objectId, { installationId: otherInstallationId }));
+      expectNotFound(await update(objectId, { installationId }));
+
+      const rows = await findRows();
+      expect(rows.length).toBe(1);
+      expect(rows[0].installationId).toBe(installationId);
+    });
+
+    it('answers like a nonexistent installation when the deviceToken differs from the stored value of an installation without installationId', async () => {
+      const owner = await signUp();
+      const objectId = await createOwnedInstallation(owner, { deviceToken, deviceType: 'android' });
+
+      expectNotFound(await update(objectId, { deviceToken: otherDeviceToken }));
+      expectNotFound(await update(objectId, { deviceToken }));
+
+      const rows = await findRows();
+      expect(rows.length).toBe(1);
+      expect(rows[0].deviceToken).toBe(deviceToken);
+    });
+
+    it('answers like a nonexistent installation for an authenticated user without write access', async () => {
+      const owner = await signUp();
+      const other = await signUp();
+      const objectId = await createOwnedInstallation(owner, baseFields);
+      const headers = { ...anonymousHeaders, 'X-Parse-Session-Token': other.getSessionToken() };
+
+      expectNotFound(await update(objectId, { deviceType: 'android' }, headers));
+      expectNotFound(await update(objectId, { installationId: otherInstallationId }, headers));
+      expectNotFound(await update(objectId, { deviceType: 'ios', installationId }, headers));
+      expectNotFound(await update('xxxxxxxxxx', { deviceType: 'android' }, headers));
+
+      const rows = await findRows();
+      expect(rows.length).toBe(1);
+      expect(rows[0].deviceType).toBe('ios');
+      expect(rows[0].installationId).toBe(installationId);
+    });
+
+    it('answers like a nonexistent installation on the classes route', async () => {
+      const owner = await signUp();
+      const objectId = await createOwnedInstallation(owner, baseFields);
+      const classesRoute = (id, body) =>
+        request({
+          method: 'PUT',
+          url: 'http://localhost:8378/1/classes/_Installation/' + id,
+          headers: anonymousHeaders,
+          body: JSON.stringify(body),
+        }).catch(error => error);
+
+      expectNotFound(await classesRoute(objectId, { deviceType: 'android' }));
+      expectNotFound(await classesRoute(objectId, { deviceType: 'ios' }));
+      expectNotFound(await classesRoute('xxxxxxxxxx', { deviceType: 'android' }));
+    });
+
+    it('answers like a nonexistent installation when no installation exists yet', async () => {
+      expectNotFound(await update('xxxxxxxxxx', { deviceType: 'android' }));
+      expectNotFound(await update('xxxxxxxxxx', { installationId }));
+    });
+
+    it('answers the same for an invalid field regardless of the stored values', async () => {
+      const owner = await signUp();
+      const objectId = await createOwnedInstallation(owner, baseFields);
+
+      // badge is a Number field; the schema check runs before the write for every class
+      const responses = [
+        await update(objectId, { deviceType: 'android', badge: 'x' }),
+        await update(objectId, { deviceType: 'ios', badge: 'x' }),
+        await update(objectId, { installationId: otherInstallationId, badge: 'x' }),
+        await update('xxxxxxxxxx', { deviceType: 'android', badge: 'x' }),
+      ];
+      expectSameResponses(responses, 400, Parse.Error.INCORRECT_TYPE);
+
+      const rows = await findRows();
+      expect(rows.length).toBe(1);
+      expect(rows[0].deviceType).toBe('ios');
+    });
+
+    it('answers the same for a beforeSave trigger regardless of the stored values', async () => {
+      const owner = await signUp();
+      const objectId = await createOwnedInstallation(owner, baseFields);
+      const trigger = jasmine.createSpy('beforeSave');
+      Parse.Cloud.beforeSave(Parse.Installation, trigger);
+
+      expectNotFound(await update(objectId, { deviceType: 'android' }));
+      expectNotFound(await update(objectId, { deviceType: 'ios' }));
+      expectNotFound(await update('xxxxxxxxxx', { deviceType: 'android' }));
+      expect(trigger).not.toHaveBeenCalled();
+    });
+
+    it('answers with the class-level permission error when the class denies the update', async () => {
+      const created = await rest.create(config, auth.master(config), '_Installation', baseFields);
+      const objectId = created.response.objectId;
+      const schema = new Parse.Schema('_Installation');
+      schema.setCLP({
+        find: {},
+        count: {},
+        get: {},
+        create: { '*': true },
+        update: {},
+        delete: {},
+        addField: {},
+        protectedFields: { '*': [] },
+      });
+      await schema.update();
+
+      expectPermissionDenied(await update(objectId, { deviceType: 'android' }));
+      expectPermissionDenied(await update(objectId, { deviceType: 'ios' }));
+      expectPermissionDenied(await update(objectId, { installationId: otherInstallationId }));
+      expectPermissionDenied(await update('xxxxxxxxxx', { deviceType: 'android' }));
+
+      // An invalid file value is rejected before the class-level permission check for every class
+      const invalidFile = { __type: 'File' };
+      const responses = [
+        await update(objectId, { deviceType: 'android', file: invalidFile }),
+        await update(objectId, { deviceType: 'ios', file: invalidFile }),
+        await update('xxxxxxxxxx', { deviceType: 'android', file: invalidFile }),
+      ];
+      expectSameResponses(responses, 400, Parse.Error.INCORRECT_TYPE);
+
+      const rows = await findRows();
+      expect(rows.length).toBe(1);
+      expect(rows[0].deviceType).toBe('ios');
+    });
+
+    it('answers the same for an unauthenticated caller when the class requires authentication for updates', async () => {
+      const created = await rest.create(config, auth.master(config), '_Installation', baseFields);
+      const objectId = created.response.objectId;
+      const schema = new Parse.Schema('_Installation');
+      schema.setCLP({
+        find: { '*': true },
+        count: { '*': true },
+        get: { '*': true },
+        create: { '*': true },
+        update: { requiresAuthentication: true },
+        delete: { '*': true },
+        addField: { '*': true },
+        protectedFields: { '*': [] },
+      });
+      await schema.update();
+
+      const responses = [
+        await update(objectId, { deviceType: 'android' }),
+        await update(objectId, { deviceType: 'ios' }),
+        await update(objectId, { installationId: otherInstallationId }),
+        await update('xxxxxxxxxx', { deviceType: 'android' }),
+      ];
+      expectSameResponses(responses, 404, Parse.Error.OBJECT_NOT_FOUND);
+      expect(responses[0].data.error).toBe('Permission denied');
+
+      const user = await signUp();
+      const headers = { ...anonymousHeaders, 'X-Parse-Session-Token': user.getSessionToken() };
+      const response = await update(objectId, { deviceType: 'android' }, headers);
+      expect(response.status).toBe(400);
+      expect(response.data.code).toBe(136);
+
+      const rows = await findRows();
+      expect(rows.length).toBe(1);
+      expect(rows[0].deviceType).toBe('ios');
+    });
+
+    it('answers like a nonexistent installation when a pointer permission excludes the caller', async () => {
+      const owner = await signUp();
+      const other = await signUp();
+      const created = await rest.create(config, auth.master(config), '_Installation', {
+        ...baseFields,
+        user: { __type: 'Pointer', className: '_User', objectId: owner.id },
+      });
+      const objectId = created.response.objectId;
+      const schema = new Parse.Schema('_Installation');
+      schema.setCLP({
+        find: { '*': true },
+        count: { '*': true },
+        get: { '*': true },
+        create: { '*': true },
+        update: { pointerFields: ['user'] },
+        delete: { '*': true },
+        addField: { '*': true },
+        protectedFields: { '*': [] },
+      });
+      await schema.update();
+      const otherHeaders = {
+        ...anonymousHeaders,
+        'X-Parse-Session-Token': other.getSessionToken(),
+      };
+
+      expectNotFound(await update(objectId, { deviceType: 'android' }));
+      expectNotFound(await update(objectId, { deviceType: 'ios' }));
+      expectNotFound(await update('xxxxxxxxxx', { deviceType: 'android' }));
+      expectNotFound(await update(objectId, { deviceType: 'android' }, otherHeaders));
+      expectNotFound(await update(objectId, { deviceType: 'ios' }, otherHeaders));
+      expectNotFound(await update('xxxxxxxxxx', { deviceType: 'android' }, otherHeaders));
+
+      const ownerHeaders = {
+        ...anonymousHeaders,
+        'X-Parse-Session-Token': owner.getSessionToken(),
+      };
+      const rejected = await update(objectId, { deviceType: 'android' }, ownerHeaders);
+      expect(rejected.status).toBe(400);
+      expect(rejected.data.code).toBe(136);
+      const applied = await update(
+        objectId,
+        { deviceType: 'ios', channels: ['news'] },
+        ownerHeaders
+      );
+      expect(applied.status).toBe(200);
+
+      const rows = await findRows();
+      expect(rows.length).toBe(1);
+      expect(rows[0].deviceType).toBe('ios');
+      expect(rows[0].channels).toEqual(['news']);
+    });
+
+    it('applies the update for the owner when the stored values are unchanged', async () => {
+      const owner = await signUp();
+      const objectId = await createOwnedInstallation(owner, baseFields);
+      const headers = { ...anonymousHeaders, 'X-Parse-Session-Token': owner.getSessionToken() };
+
+      const response = await update(objectId, { deviceType: 'ios', channels: ['news'] }, headers);
+      expect(response.status).toBe(200);
+
+      const rows = await findRows();
+      expect(rows.length).toBe(1);
+      expect(rows[0].channels).toEqual(['news']);
+    });
+
+    it('rejects a changed installationId for the owner', async () => {
+      const owner = await signUp();
+      const objectId = await createOwnedInstallation(owner, baseFields);
+      const headers = { ...anonymousHeaders, 'X-Parse-Session-Token': owner.getSessionToken() };
+
+      const response = await update(objectId, { installationId: otherInstallationId }, headers);
+      expect(response.status).toBe(400);
+      expect(response.data.code).toBe(136);
+      expect(response.data.error).toBe('installationId may not be changed in this operation');
+    });
+
+    it('rejects a changed deviceType for the master key', async () => {
+      const owner = await signUp();
+      const objectId = await createOwnedInstallation(owner, baseFields);
+
+      const response = await update(objectId, { deviceType: 'android' }, masterHeaders);
+      expect(response.status).toBe(400);
+      expect(response.data.code).toBe(136);
+      expect(response.data.error).toBe('deviceType may not be changed in this operation');
+    });
+  });
+
   describe('deviceToken deduplication on new install (no installationId match)', () => {
     const { randomUUID } = require('crypto');
     const installationSchema = {
@@ -1308,6 +1738,36 @@ describe('Installations', () => {
       await reconfigureServer({ installation: installationOpts });
       config = Config.get('test');
       database = config.database;
+    }
+
+    // Grants the public every operation on `_Installation` except those overridden.
+    // `find` and `delete` are blocked for non-master callers at the REST layer
+    // regardless, but the deduplication delete runs below that layer, so the
+    // class-level permission is what it is checked against once `enforceAuth` is on.
+    async function setInstallationClassLevelPermissions(overrides) {
+      const response = await request({
+        method: 'PUT',
+        url: 'http://localhost:8378/1/schemas/_Installation',
+        headers: {
+          'X-Parse-Application-Id': 'test',
+          'X-Parse-Master-Key': 'test',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          classLevelPermissions: Object.assign(
+            {
+              get: { '*': true },
+              find: { '*': true },
+              count: { '*': true },
+              create: { '*': true },
+              update: { '*': true },
+              addField: { '*': true },
+            },
+            overrides
+          ),
+        }),
+      });
+      expect(response.status).toBe(200);
     }
 
     it('default options destroy conflicting rows', async () => {
@@ -1393,6 +1853,83 @@ describe('Installations', () => {
       const protectedRow = all.find(r => r.installationId === 'iid-protected');
       expect(protectedRow).toBeDefined();
       expect(protectedRow.deviceToken).toBe(t);
+    });
+
+    // `duplicateDeviceTokenActionEnforceAuth` runs the dedup action under the caller's
+    // auth context, so what it enforces is the row ACL and the class-level permissions.
+    // It is therefore not by itself a switch that stops unauthenticated dedup: a row
+    // that carries no ACL under permissive class-level permissions is writable by the
+    // public, so it stays in scope. The two specs below pin both halves of that, so the
+    // option's documented scope stays measurable.
+    it('enforceAuth=true leaves conflicting rows that carry no ACL in dedup scope', async () => {
+      await reconfigureWithInstallationOptions({ duplicateDeviceTokenActionEnforceAuth: true });
+      const t = randomUUID();
+      await rest.create(config, auth.nobody(config), '_Installation', {
+        deviceToken: t,
+        deviceType: 'ios',
+        installationId: 'iid-no-acl-a',
+      });
+      await rest.create(config, auth.nobody(config), '_Installation', {
+        deviceToken: t,
+        deviceType: 'ios',
+        installationId: 'iid-no-acl-b',
+      });
+
+      const all = await database.adapter.find('_Installation', installationSchema, {}, {});
+      expect(all.length).toBe(1);
+      expect(all[0].installationId).toBe('iid-no-acl-b');
+    });
+
+    it('enforceAuth=true preserves a conflicting row without an ACL when the class-level permissions deny the caller the delete operation', async () => {
+      await reconfigureWithInstallationOptions({ duplicateDeviceTokenActionEnforceAuth: true });
+      const t = randomUUID();
+      await rest.create(config, auth.master(config), '_Installation', {
+        deviceToken: t,
+        deviceType: 'ios',
+        installationId: 'iid-clp-existing',
+      });
+
+      await setInstallationClassLevelPermissions({ delete: {} });
+
+      await rest.create(config, auth.nobody(config), '_Installation', {
+        deviceToken: t,
+        deviceType: 'ios',
+        installationId: 'iid-clp-other',
+      });
+
+      // The dedup delete is rejected and swallowed, so the pre-existing row keeps its
+      // deviceToken and the new install is inserted alongside it.
+      const all = await database.adapter.find('_Installation', installationSchema, {}, {});
+      expect(all.length).toBe(2);
+      const preExisting = all.find(r => r.installationId === 'iid-clp-existing');
+      expect(preExisting).toBeDefined();
+      expect(preExisting.deviceToken).toBe(t);
+    });
+
+    it('enforceAuth=false dedups a conflicting row even when the class-level permissions deny the caller the delete operation', async () => {
+      // Control for the spec above: with `enforceAuth` off the dedup runs as master, so
+      // the class-level permissions are not consulted at all and the same class-level
+      // permissions that preserve the row above do not preserve it here. The two specs
+      // together pin that it is the combination that scopes the dedup, not either half.
+      await reconfigureWithInstallationOptions({ duplicateDeviceTokenActionEnforceAuth: false });
+      const t = randomUUID();
+      await rest.create(config, auth.master(config), '_Installation', {
+        deviceToken: t,
+        deviceType: 'ios',
+        installationId: 'iid-clp-existing',
+      });
+
+      await setInstallationClassLevelPermissions({ delete: {} });
+
+      await rest.create(config, auth.nobody(config), '_Installation', {
+        deviceToken: t,
+        deviceType: 'ios',
+        installationId: 'iid-clp-other',
+      });
+
+      const all = await database.adapter.find('_Installation', installationSchema, {}, {});
+      expect(all.length).toBe(1);
+      expect(all[0].installationId).toBe('iid-clp-other');
     });
 
     it('enforceAuth=true with master-key caller still bypasses ACL and dedups', async () => {
@@ -1693,6 +2230,210 @@ describe('Installations', () => {
     });
   });
 
+
+  describe('deviceToken adoption on create (no installationId presented)', () => {
+    const { randomUUID } = require('crypto');
+    const anonymousHeaders = {
+      'X-Parse-Application-Id': 'test',
+      'X-Parse-REST-API-Key': 'rest',
+      'Content-Type': 'application/json',
+    };
+
+    // A create that presents a `deviceToken` already held by exactly one row and no
+    // `installationId` of its own is resolved onto that row rather than inserting a
+    // second one. This is the documented deduplication contract: see the comment on
+    // `ios merge existing same token no installation id` above, which describes the
+    // imported-device-token flow the branch exists for and states that the matched
+    // row is reused so that fields added out-of-band (channels, custom columns) are
+    // preserved. The tests below pin that contract and the permission checks that
+    // still apply to the resulting write.
+
+    it('resolves onto the row holding the deviceToken instead of inserting a second row', async () => {
+      const t = randomUUID();
+      await rest.create(config, auth.nobody(config), '_Installation', {
+        deviceToken: t,
+        deviceType: 'ios',
+        installationId: 'iid-existing',
+        channels: ['news'],
+      });
+
+      const response = await request({
+        method: 'POST',
+        url: 'http://localhost:8378/1/installations',
+        headers: anonymousHeaders,
+        body: JSON.stringify({ deviceToken: t, deviceType: 'ios', channels: ['sports'] }),
+      });
+
+      // The write is applied to the existing row, so the response carries `updatedAt`
+      // rather than the `objectId`/`createdAt` of a newly inserted row.
+      expect(response.status).toBe(200);
+      expect(response.data.updatedAt).toBeDefined();
+      expect(response.data.objectId).toBeUndefined();
+
+      const all = await database.adapter.find('_Installation', installationSchema, {}, {});
+      expect(all.length).toBe(1);
+      expect(all[0].deviceToken).toBe(t);
+      expect(all[0].installationId).toBe('iid-existing');
+      expect(all[0].channels).toEqual(['sports']);
+    });
+
+    it('returns a created response when no row holds the deviceToken', async () => {
+      // Control for the spec above: the `200`/`updatedAt` response there is specific to
+      // resolving onto an existing row. A deviceToken no row holds is inserted normally,
+      // so the response shape distinguishes the two outcomes.
+      const response = await request({
+        method: 'POST',
+        url: 'http://localhost:8378/1/installations',
+        headers: anonymousHeaders,
+        body: JSON.stringify({ deviceToken: randomUUID(), deviceType: 'ios' }),
+      });
+
+      expect(response.status).toBe(201);
+      expect(response.data.objectId).toBeDefined();
+      expect(response.data.updatedAt).toBeUndefined();
+
+      const all = await database.adapter.find('_Installation', installationSchema, {}, {});
+      expect(all.length).toBe(1);
+    });
+
+    it('deduplicates the row holding the deviceToken when the caller presents its own installationId', async () => {
+      // With an installationId of its own the caller does not resolve onto the matched
+      // row; the deduplication configured by `installation.duplicateDeviceTokenAction`
+      // applies to it instead and the caller's own install is inserted.
+      const t = randomUUID();
+      await rest.create(config, auth.nobody(config), '_Installation', {
+        deviceToken: t,
+        deviceType: 'ios',
+        installationId: 'iid-first',
+      });
+
+      const response = await request({
+        method: 'POST',
+        url: 'http://localhost:8378/1/installations',
+        headers: anonymousHeaders,
+        body: JSON.stringify({
+          deviceToken: t,
+          deviceType: 'ios',
+          installationId: 'iid-second',
+        }),
+      });
+
+      expect(response.status).toBe(201);
+      const all = await database.adapter.find('_Installation', installationSchema, {}, {});
+      expect(all.length).toBe(1);
+      expect(all[0].installationId).toBe('iid-second');
+    });
+
+    it('rejects the write when the caller presents its installationId only as a request header', async () => {
+      // The branch above is reached from `installationId` in the request body. The
+      // header is resolved into the deduplication lookup but not into that branch's
+      // condition, so a caller that presents it only as a header is rejected instead.
+      const t = randomUUID();
+      await rest.create(config, auth.nobody(config), '_Installation', {
+        deviceToken: t,
+        deviceType: 'ios',
+        installationId: 'iid-first',
+      });
+
+      const response = await request({
+        method: 'POST',
+        url: 'http://localhost:8378/1/installations',
+        headers: Object.assign({}, anonymousHeaders, {
+          'X-Parse-Installation-Id': 'iid-second',
+        }),
+        body: JSON.stringify({ deviceToken: t, deviceType: 'ios' }),
+      }).catch(error => error);
+
+      expect(response.status).toBe(400);
+      expect(response.data.code).toBe(132);
+
+      const all = await database.adapter.find('_Installation', installationSchema, {}, {});
+      expect(all.length).toBe(1);
+      expect(all[0].installationId).toBe('iid-first');
+      expect(all[0].deviceToken).toBe(t);
+    });
+
+    it('rejects the write when the matched row has an ACL that excludes an unauthenticated caller', async () => {
+      const t = randomUUID();
+      const user = await Parse.User.signUp('installation-acl-' + randomUUID(), 'pass');
+      await rest.create(config, auth.master(config), '_Installation', {
+        deviceToken: t,
+        deviceType: 'ios',
+        installationId: 'iid-acl',
+        channels: ['news'],
+        ACL: { [user.id]: { read: true, write: true } },
+      });
+
+      const response = await request({
+        method: 'POST',
+        url: 'http://localhost:8378/1/installations',
+        headers: anonymousHeaders,
+        body: JSON.stringify({ deviceToken: t, deviceType: 'ios', channels: ['sports'] }),
+      }).catch(error => error);
+
+      expect(response.status).toBe(404);
+      expect(response.data.code).toBe(Parse.Error.OBJECT_NOT_FOUND);
+
+      const all = await database.adapter.find('_Installation', installationSchema, {}, {});
+      expect(all.length).toBe(1);
+      expect(all[0].channels).toEqual(['news']);
+    });
+
+    it('rejects the write when the matched row has an ACL that excludes an authenticated non-owner', async () => {
+      const t = randomUUID();
+      const owner = await Parse.User.signUp('installation-owner-' + randomUUID(), 'pass');
+      await rest.create(config, auth.master(config), '_Installation', {
+        deviceToken: t,
+        deviceType: 'ios',
+        installationId: 'iid-acl-owner',
+        channels: ['news'],
+        ACL: { [owner.id]: { read: true, write: true } },
+      });
+      const other = await Parse.User.signUp('installation-other-' + randomUUID(), 'pass');
+
+      const response = await request({
+        method: 'POST',
+        url: 'http://localhost:8378/1/installations',
+        headers: Object.assign({}, anonymousHeaders, {
+          'X-Parse-Session-Token': other.getSessionToken(),
+        }),
+        body: JSON.stringify({ deviceToken: t, deviceType: 'ios', channels: ['sports'] }),
+      }).catch(error => error);
+
+      expect(response.status).toBe(404);
+      expect(response.data.code).toBe(Parse.Error.OBJECT_NOT_FOUND);
+
+      const all = await database.adapter.find('_Installation', installationSchema, {}, {});
+      expect(all.length).toBe(1);
+      expect(all[0].channels).toEqual(['news']);
+    });
+
+    it('applies the write when the caller is granted write access by the matched row ACL', async () => {
+      const t = randomUUID();
+      const owner = await Parse.User.signUp('installation-granted-' + randomUUID(), 'pass');
+      await rest.create(config, auth.master(config), '_Installation', {
+        deviceToken: t,
+        deviceType: 'ios',
+        installationId: 'iid-acl-granted',
+        channels: ['news'],
+        ACL: { [owner.id]: { read: true, write: true } },
+      });
+
+      const response = await request({
+        method: 'POST',
+        url: 'http://localhost:8378/1/installations',
+        headers: Object.assign({}, anonymousHeaders, {
+          'X-Parse-Session-Token': owner.getSessionToken(),
+        }),
+        body: JSON.stringify({ deviceToken: t, deviceType: 'ios', channels: ['sports'] }),
+      });
+
+      expect(response.status).toBe(200);
+      const all = await database.adapter.find('_Installation', installationSchema, {}, {});
+      expect(all.length).toBe(1);
+      expect(all[0].channels).toEqual(['sports']);
+    });
+  });
   describe('options validation', () => {
     it('should accept default empty config', async () => {
       await expectAsync(reconfigureServer({})).toBeResolved();

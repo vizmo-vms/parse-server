@@ -24,6 +24,7 @@ import Config from '../Config';
 import { LRUCache as LRU } from 'lru-cache';
 import UserRouter from '../Routers/UsersRouter';
 import DatabaseController from '../Controllers/DatabaseController';
+import { enforceRoleSecurity } from '../SharedRest';
 import { isDeepStrictEqual } from 'util';
 
 
@@ -724,7 +725,9 @@ class ParseLiveQueryServer {
         const result: any = {};
         if (error && error.code === Parse.Error.INVALID_SESSION_TOKEN) {
           result.error = error;
-          this.authCache.set(sessionToken, Promise.resolve(result), this.config.cacheTimeout);
+          this.authCache.set(sessionToken, Promise.resolve(result), {
+            ttl: this.config.cacheTimeout,
+          });
         } else {
           this.authCache.delete(sessionToken);
         }
@@ -745,10 +748,28 @@ class ParseLiveQueryServer {
     const aclGroup = ['*'];
     let userId;
     if (typeof subscriptionInfo !== 'undefined') {
-      const result = await this.getAuthForSessionToken(subscriptionInfo.sessionToken);
+      // Fall back to the connect-frame token, the same way `_matchesACL`,
+      // `getAuthFromClient` and `_filterSensitiveData` already do. The subscribe
+      // frame's session token is optional, so resolving only it would evaluate the
+      // CLP against an anonymous identity while the ACL check authorized the read
+      // against the connected user.
+      const result = await this.getAuthForSessionToken(
+        subscriptionInfo.sessionToken || client.sessionToken
+      );
       userId = result.userId;
       if (userId) {
         aclGroup.push(userId);
+        // Read per call rather than caching on the instance: the whole app config
+        // can be replaced at runtime through the `Parse.Server` setter.
+        const appConfig = Config.get(this.config.appId);
+        aclGroup.push(
+          ...(await this._rolesForCLPOperation(
+            classLevelPermissions,
+            result.auth,
+            op,
+            appConfig
+          ))
+        );
       }
     }
     await SchemaController.validatePermission(
@@ -760,63 +781,72 @@ class ParseLiveQueryServer {
     // Enforce pointer permissions that validatePermission defers.
     // Returns false to silently skip the event (like ACL), rather than
     // throwing which would push errors to the client and log noise.
-    if (!client.hasMasterKey && classLevelPermissions) {
-      const permissionField =
-        ['get', 'find', 'count'].indexOf(op) > -1 ? 'readUserFields' : 'writeUserFields';
-      const pointerFields = [];
-      if (classLevelPermissions[op]?.pointerFields) {
-        pointerFields.push(...classLevelPermissions[op].pointerFields);
-      }
-      if (Array.isArray(classLevelPermissions[permissionField])) {
-        for (const field of classLevelPermissions[permissionField]) {
-          if (!pointerFields.includes(field)) {
-            pointerFields.push(field);
-          }
-        }
-      }
-      if (pointerFields.length > 0) {
-        // If public or user-specific permission already grants access, skip pointer check
-        if (
-          !SchemaController.testPermissions(classLevelPermissions, aclGroup, op)
-        ) {
-          if (!userId) {
-            return false;
-          }
-          // Check if any pointer field points to the current user
-          const hasAccess = pointerFields.some(field => {
-            const value =
-              typeof object.get === 'function' ? object.get(field) : object[field];
-            if (!value) {
-              return false;
-            }
-            // Handle Parse.Object pointer (has .id)
-            if (value.id) {
-              return value.id === userId;
-            }
-            // Handle raw pointer JSON (has .objectId)
-            if (value.objectId) {
-              return value.objectId === userId;
-            }
-            // Handle array of pointers
-            if (Array.isArray(value)) {
-              return value.some(item => {
-                if (item.id) {
-                  return item.id === userId;
-                }
-                if (item.objectId) {
-                  return item.objectId === userId;
-                }
-                return false;
-              });
-            }
-            return false;
-          });
-          if (!hasAccess) {
-            return false;
-          }
-        }
-      }
+    if (
+      !client.hasMasterKey &&
+      !SchemaController.testPointerPermissions(classLevelPermissions, aclGroup, op, userId, field =>
+        typeof object.get === 'function' ? object.get(field) : object[field]
+      )
+    ) {
+      return false;
     }
+  }
+
+  // `addProtectedFields` reads role-scoped `protectedFields` groups from
+  // `Auth.userRoles`, which stays empty unless the roles are explicitly loaded.
+  // Without this, every `role:` group is silently skipped and LiveQuery would
+  // disclose fields that the REST path strips for the same caller. The roles are
+  // only fetched when the class actually declares a `role:` group, so classes
+  // without one keep subscribing and receiving events without a role lookup.
+  async _loadRolesForProtectedFields(classLevelPermissions?: any, clientAuth?: any) {
+    if (typeof clientAuth?.getUserRoles !== 'function') {
+      return;
+    }
+    const protectedFields = classLevelPermissions?.protectedFields;
+    if (!protectedFields || Array.isArray(protectedFields)) {
+      return;
+    }
+    if (!Object.keys(protectedFields).some(key => key.startsWith('role:'))) {
+      return;
+    }
+    await clientAuth.getUserRoles();
+  }
+
+  // `SchemaController.testPermissions` matches CLP entries against the caller's
+  // ACL group, so a `role:` grant only applies when the caller's roles are in that
+  // group. The REST path builds the same group in `RestQuery.getUserAndRoleACL`;
+  // without this LiveQuery denies `find`/`get` to legitimate role members that the
+  // equivalent REST query serves.
+  //
+  // Honouring the grant widens what LiveQuery delivers, so it is opt-in until the
+  // next major via `enableLiveQueryClassLevelPermissionRoles` (see DEPPS25). The
+  // option lives on `ParseServerOptions`, which is NOT what `this.config` holds --
+  // that is `liveQueryServerOptions` -- so it has to be read through `Config.get`.
+  // The optional chaining is required: `Config.get` returns `undefined` for a
+  // standalone LiveQuery server, whose `AppCache` is empty.
+  //
+  // The roles are only resolved when the operation's CLP actually declares a
+  // `role:` entry, so classes that grant by `*` or by user id keep matching events
+  // without a role lookup.
+  async _rolesForCLPOperation(
+    classLevelPermissions?: any,
+    clientAuth?: any,
+    op?: string,
+    appConfig?: any
+  ): Promise<string[]> {
+    if (!appConfig?.enableLiveQueryClassLevelPermissionRoles) {
+      return [];
+    }
+    if (typeof clientAuth?.getUserRoles !== 'function') {
+      return [];
+    }
+    const opPermissions = classLevelPermissions?.[op];
+    if (!opPermissions || typeof opPermissions !== 'object') {
+      return [];
+    }
+    if (!Object.keys(opPermissions).some(key => key.startsWith('role:'))) {
+      return [];
+    }
+    return await clientAuth.getUserRoles();
   }
 
   async _filterSensitiveData(
@@ -831,12 +861,35 @@ class ParseLiveQueryServer {
     const aclGroup = ['*'];
     let clientAuth;
     if (typeof subscriptionInfo !== 'undefined') {
-      const { userId, auth } = await this.getAuthForSessionToken(subscriptionInfo.sessionToken);
+      // Fall back to the connect-frame token, the same way `_matchesACL` and
+      // `getAuthFromClient` already do. The subscribe frame's session token is
+      // optional, so resolving only it would redact against an anonymous identity
+      // while the ACL check authorized the read against the connected user. That
+      // mismatch skips every identity-derived `protectedFields` group
+      // (`role:`, `authenticated` and `<objectId>`).
+      const { userId, auth } = await this.getAuthForSessionToken(
+        subscriptionInfo.sessionToken || client.sessionToken
+      );
       if (userId) {
         aclGroup.push(userId);
       }
       clientAuth = auth;
     }
+    if (!client.hasMasterKey) {
+      await this._loadRolesForProtectedFields(classLevelPermissions, clientAuth);
+    }
+    // `DatabaseController.filterSensitiveData` reads the class permissions through
+    // `schema.getClassLevelPermissions(className)` and falls back to `{}` when the
+    // argument does not expose that method. The LiveQuery server only ever holds
+    // the serialized CLP from the published message and has no `SchemaController`
+    // for the class, so passing the raw CLP silently skipped the entire
+    // `userField:` block: those groups intersect against the other groups, so
+    // skipping them left fields protected that the REST path returns. Wrap the CLP
+    // so the helper can reach it. (`addProtectedFields` above needs no wrapper --
+    // it already falls back to treating its argument as the permissions object.)
+    const schema = { getClassLevelPermissions: () => classLevelPermissions };
+    // Parse Server options, not LiveQuery options
+    const appConfig = client.hasMasterKey ? undefined : Config.get(this.config.appId);
     const filter = obj => {
       if (!obj) {
         return;
@@ -845,7 +898,9 @@ class ParseLiveQueryServer {
       if (client.hasMasterKey) {
         protectedFields = [];
       } else if (!Array.isArray(protectedFields)) {
-        protectedFields = getDatabaseController(this.config).addProtectedFields(
+        // Standalone server has no app config
+        const database = appConfig?.database || getDatabaseController(this.config);
+        protectedFields = database.addProtectedFields(
           classLevelPermissions,
           res.object.className,
           query,
@@ -859,11 +914,11 @@ class ParseLiveQueryServer {
         aclGroup,
         clientAuth,
         op,
-        classLevelPermissions,
+        schema,
         res.object.className,
         protectedFields,
         obj,
-        this.config.protectedFieldsOwnerExempt
+        appConfig?.protectedFieldsOwnerExempt
       );
     };
     res.object = filter(res.object);
@@ -1258,7 +1313,11 @@ class ParseLiveQueryServer {
     let subscriptionInfoCreated = false;
     let releaseSubscriptionLifecycle;
     let authCalled = false;
+    let clientAuth;
     try {
+      const appConfig = Config.get(this.config.appId);
+      // Enforce the class access rules of a REST find
+      enforceRoleSecurity('find', className, { isMaster: client.hasMasterKey }, appConfig);
       const trigger = getTrigger(className, 'beforeSubscribe', Parse.applicationId);
       if (trigger) {
         const auth = await this.getAuthFromClient(client, request.requestId, request.sessionToken);
@@ -1266,6 +1325,7 @@ class ParseLiveQueryServer {
           return;
         }
         authCalled = true;
+        clientAuth = auth;
         if (auth && auth.user) {
           request.user = auth.user;
         }
@@ -1292,6 +1352,7 @@ class ParseLiveQueryServer {
           if (!this._isActiveClient(parseWebsocket, client)) {
             return;
           }
+          clientAuth = auth;
           if (auth && auth.user) {
             request.user = auth.user;
           }
@@ -1310,7 +1371,6 @@ class ParseLiveQueryServer {
         }
       }
       // Validate query condition depth
-      const appConfig = Config.get(this.config.appId);
       if (!client.hasMasterKey) {
         const rc = appConfig.requestComplexity;
         if (rc && rc.queryDepth !== -1) {
@@ -1385,12 +1445,23 @@ class ParseLiveQueryServer {
           request.sessionToken
         );
         authCalled = true;
+        clientAuth = auth;
         if (auth && auth.user) {
           request.user = auth.user;
           aclGroup.push(auth.user.id);
         }
       } else if (request.user) {
         aclGroup.push(request.user.id);
+      }
+      if (request.user) {
+        aclGroup.push(
+          ...(await this._rolesForCLPOperation(
+            classLevelPermissions,
+            clientAuth,
+            op,
+            appConfig
+          ))
+        );
       }
       await SchemaController.validatePermission(
         classLevelPermissions,
@@ -1401,7 +1472,12 @@ class ParseLiveQueryServer {
 
       // Check protected fields in WHERE clause and WATCH parameter
       if (!client.hasMasterKey) {
-        const auth = request.user ? { user: request.user, userRoles: [] } : {};
+        await this._loadRolesForProtectedFields(classLevelPermissions, clientAuth);
+        // `clientAuth` is undefined only when no session token was supplied on
+        // either frame, in which case a `beforeSubscribe` trigger is the only way
+        // `request.user` can be set. There is no session to resolve roles from for
+        // such a trigger-assigned user, so `role:` groups cannot be applied to it.
+        const auth = request.user ? clientAuth || { user: request.user, userRoles: [] } : {};
         const protectedFields =
           appConfig.database.addProtectedFields(
             classLevelPermissions,
