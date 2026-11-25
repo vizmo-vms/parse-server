@@ -5,7 +5,7 @@
   "main": "lib/index.js",
   "repository": {
     "type": "git",
-    "url": "https://github.com/parse-community/parse-server"
+    "url": "git+https://github.com/parse-community/parse-server.git"
   },
   "files": [
     "bin/",
@@ -132,7 +132,7 @@
     "prettier": "prettier --write {src,spec}/{**/*,*}.js",
     "prepare": "npm run build",
     "postinstall": "node -p 'require(\"./postinstall.js\")()'",
-    "madge:circular": "node_modules/.bin/madge ./src --circular",
+    "madge:circular": "madge ./src --circular",
     "benchmark": "cross-env MONGODB_VERSION=8.0.4 MONGODB_TOPOLOGY=standalone mongodb-runner exec -t standalone --version 8.0.4 -- --port 27017 -- npm run benchmark:only",
     "benchmark:only": "node --expose-gc --max-old-space-size=1024 benchmark/performance.js",
     "benchmark:quick": "cross-env BENCHMARK_ITERATIONS=10 npm run benchmark:only"
